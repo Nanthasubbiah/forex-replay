@@ -12,10 +12,15 @@ export interface FibLevel {
   golden: boolean;
 }
 
-function ratioLabel(ratio: number): string {
+export function ratioLabel(ratio: number): string {
   if (ratio === 0) return "0%";
   if (ratio === 1) return "100%";
   return `${(ratio * 100).toFixed(1)}%`;
+}
+
+/** Price at `ratio` between the two anchors (works for up and down swings). */
+export function fibPrice(priceA: number, priceB: number, ratio: number): number {
+  return priceA + (priceB - priceA) * ratio;
 }
 
 /**
@@ -26,8 +31,74 @@ function ratioLabel(ratio: number): string {
 export function fibLevels(priceA: number, priceB: number): FibLevel[] {
   return RETRACEMENT_RATIOS.map((ratio) => ({
     ratio,
-    price: priceA + (priceB - priceA) * ratio,
+    price: fibPrice(priceA, priceB, ratio),
     label: ratioLabel(ratio),
     golden: ratio === 0.618,
   }));
+}
+
+// ------------------------------------------------------------- drawing model
+
+export interface FibLevelState {
+  ratio: number;
+  enabled: boolean;
+}
+
+export interface FibAnchor {
+  /** Bar timestamp (seconds, UTC). */
+  time: number;
+  price: number;
+}
+
+export interface FibDrawing {
+  id: number;
+  a: FibAnchor;
+  b: FibAnchor;
+  color: string;
+  levels: FibLevelState[];
+}
+
+export const DEFAULT_FIB_COLOR = "#22d3ee";
+export const FIB_COLOR_PRESETS = ["#22d3ee", "#f59e0b", "#a78bfa", "#34d399", "#f87171", "#e5e7eb"];
+
+export function defaultFibLevels(): FibLevelState[] {
+  return RETRACEMENT_RATIOS.map((ratio) => ({ ratio, enabled: true }));
+}
+
+export function toggleLevel(levels: FibLevelState[], ratio: number): FibLevelState[] {
+  return levels.map((l) => (l.ratio === ratio ? { ...l, enabled: !l.enabled } : l));
+}
+
+export function removeLevel(levels: FibLevelState[], ratio: number): FibLevelState[] {
+  return levels.filter((l) => l.ratio !== ratio);
+}
+
+/**
+ * Add a level from a percentage (e.g. 127.2 → ratio 1.272).
+ * Returns `null` for invalid or duplicate input.
+ */
+export function addLevel(levels: FibLevelState[], ratioPct: number): FibLevelState[] | null {
+  const ratio = ratioPct / 100;
+  if (!Number.isFinite(ratio) || ratio <= 0 || ratio > 10) return null;
+  const rounded = Math.round(ratio * 10_000) / 10_000;
+  if (levels.some((l) => Math.abs(l.ratio - rounded) < 1e-9)) return null;
+  return [...levels, { ratio: rounded, enabled: true }].sort((x, y) => x.ratio - y.ratio);
+}
+
+/** Shortest distance (in px) from a point to a line segment. */
+export function distToSegment(
+  px: number,
+  py: number,
+  x1: number,
+  y1: number,
+  x2: number,
+  y2: number,
+): number {
+  const dx = x2 - x1;
+  const dy = y2 - y1;
+  const len2 = dx * dx + dy * dy;
+  if (len2 === 0) return Math.hypot(px - x1, py - y1);
+  let t = ((px - x1) * dx + (py - y1) * dy) / len2;
+  t = Math.max(0, Math.min(1, t));
+  return Math.hypot(px - (x1 + t * dx), py - (y1 + t * dy));
 }

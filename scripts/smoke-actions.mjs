@@ -113,12 +113,47 @@ try {
   // ---- Fibonacci tool: two chart clicks
   await page.locator(".tool-btn").first().click();
   const box = await page.locator(".chart-canvas").boundingBox();
-  await page.mouse.click(box.x + box.width * 0.35, box.y + box.height * 0.3);
+  const p1 = { x: box.x + box.width * 0.3, y: box.y + box.height * 0.3 };
+  const p2 = { x: box.x + box.width * 0.5, y: box.y + box.height * 0.55 };
+  await page.mouse.click(p1.x, p1.y);
   await page.waitForTimeout(120);
   results.fibHintAfterFirstClick = await page.locator(".tool-hint").innerText();
-  await page.mouse.click(box.x + box.width * 0.7, box.y + box.height * 0.65);
+  await page.mouse.click(p2.x, p2.y);
   await page.waitForTimeout(250);
   results.fibChip = (await page.locator(".tool-chip").innerText()).trim();
+  await page.screenshot({ path: "scripts/smoke-fib.png" });
+
+  // ---- right-click the drawing (anchor) -> editor
+  const mid = { x: (p1.x + p2.x) / 2, y: (p1.y + p2.y) / 2 };
+  await page.mouse.click(p1.x, p1.y, { button: "right" });
+  await page.waitForTimeout(200);
+  results.fibMenuItems = (await page.locator(".ctx-item").allInnerTexts()).map((t) => t.trim());
+  await page.getByRole("button", { name: "Edit levels & colour…" }).click();
+  await page.waitForTimeout(200);
+  results.fibEditorOpen = await page.locator(".fib-editor").isVisible();
+  results.fibRowsBefore = await page.locator(".fib-row").count();
+
+  // toggle the 23.6% level off, remove 78.6%, add a 127.2% level, pick a colour
+  await page.locator(".fib-row").nth(1).locator('input[type="checkbox"]').click();
+  await page.locator(".fib-row").nth(5).locator(".link-btn").click();
+  await page.locator(".fib-add input").fill("127.2");
+  await page.locator(".fib-add button").click();
+  await page.locator(".fib-swatch").nth(1).click();
+  await page.waitForTimeout(150);
+  results.fibRowsAfter = await page.locator(".fib-row").count();
+  results.fibColors = await page.locator(".fib-swatch.active").evaluate((el) => getComputedStyle(el).backgroundColor);
+  await page.getByRole("button", { name: "Done" }).click();
+  await page.waitForTimeout(200);
+  results.fibEditorClosed = !(await page.locator(".fib-editor").isVisible());
+  results.fibChipAfterEdit = (await page.locator(".tool-chip").innerText()).trim();
+
+  // ---- drag the whole tool down-right
+  await page.mouse.move(mid.x, mid.y);
+  await page.mouse.down();
+  await page.mouse.move(mid.x + 70, mid.y + 50, { steps: 6 });
+  await page.mouse.up();
+  await page.waitForTimeout(300);
+  results.fibChipAfterDrag = (await page.locator(".tool-chip").innerText()).trim();
 
   await page.screenshot({ path: shot });
 } catch (e) {

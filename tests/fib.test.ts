@@ -32,3 +32,44 @@ describe("fibLevels", () => {
     expect(levels.every((l) => l.price === 1.15)).toBe(true);
   });
 });
+
+import {
+  addLevel,
+  defaultFibLevels,
+  distToSegment,
+  removeLevel,
+  toggleLevel,
+} from "../src/lib/fib";
+
+describe("fib drawing helpers", () => {
+  it("creates the default level set enabled", () => {
+    const levels = defaultFibLevels();
+    expect(levels).toHaveLength(7);
+    expect(levels.every((l) => l.enabled)).toBe(true);
+  });
+
+  it("adds custom levels sorted and rejects duplicates/invalid input", () => {
+    const withExt = addLevel(defaultFibLevels(), 127.2);
+    expect(withExt).not.toBeNull();
+    expect(withExt!.at(-1)).toEqual({ ratio: 1.272, enabled: true });
+    expect(withExt).toHaveLength(8);
+    expect(addLevel(defaultFibLevels(), 61.8)).toBeNull();
+    expect(addLevel(defaultFibLevels(), -5)).toBeNull();
+    expect(addLevel(defaultFibLevels(), 5000)).toBeNull();
+  });
+
+  it("toggles and removes levels", () => {
+    const toggled = toggleLevel(defaultFibLevels(), 0.5);
+    expect(toggled.find((l) => l.ratio === 0.5)!.enabled).toBe(false);
+    expect(toggled).toHaveLength(7);
+    const removed = removeLevel(defaultFibLevels(), 0.5);
+    expect(removed.some((l) => l.ratio === 0.5)).toBe(false);
+    expect(removed).toHaveLength(6);
+  });
+
+  it("computes point-to-segment distance", () => {
+    expect(distToSegment(0, 5, 0, 0, 10, 10)).toBeCloseTo(Math.SQRT1_2 * 5);
+    expect(distToSegment(-3, 0, 0, 0, 10, 10)).toBeCloseTo(Math.hypot(3, 0));
+    expect(distToSegment(0, 0, 0, 0, 0, 0)).toBeCloseTo(0);
+  });
+});

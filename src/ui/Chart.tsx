@@ -17,19 +17,24 @@ import {
 import { useStore } from "../store";
 import type { LoadedData } from "../store";
 import type { Simulator } from "../engine/simulator";
-import type { PendingType } from "../engine/types";
+import type { Bar, PendingType } from "../engine/types";
 import { getSymbolSpec } from "../engine/symbols";
-import { fibLevels } from "../lib/fib";
+import {
+  DEFAULT_FIB_COLOR,
+  defaultFibLevels,
+  distToSegment,
+  fibPrice,
+  ratioLabel,
+  type FibAnchor,
+  type FibDrawing,
+} from "../lib/fib";
+import { hexToRgba } from "../lib/color";
+import { FibEditor } from "./FibEditor";
+import { ContextMenu } from "./ContextMenu";
 import { fmtPrice, fmtTime } from "../lib/format";
 
 type MarkersApi = ISeriesMarkersPluginApi<Time>;
 type FibMode = "first" | "second" | null;
-
-interface Fib {
-  id: number;
-  a: number;
-  b: number;
-}
 
 const PENDING_LABELS: Record<PendingType, string> = {
   buy_limit: "BUY LIMIT",
@@ -37,6 +42,13 @@ const PENDING_LABELS: Record<PendingType, string> = {
   buy_stop: "BUY STOP",
   sell_stop: "SELL STOP",
 };
+
+interface FibGeometry {
+  xA: number;
+  xB: number;
+  yA: number;
+  yB: number;
+}
 
 function buildMarkers(sim: Simulator): SeriesMarker<Time>[] {
   const out: SeriesMarker<Time>[] = [];
@@ -57,8 +69,180 @@ function buildMarkers(sim: Simulator): SeriesMarker<Time>[] {
   return out.sort((a, b) => Number(a.time) - Number(b.time));
 }
 
+function fibGeometry(
+  chart: IChartApi,
+  series: ISeriesApi<"Candlestick">,
+  fib: FibDrawing,
+): FibGeometry | null {
+  const xA = chart.timeScale().timeToCoordinate(fib.a.time as UTCTimestamp);
+  const xB = chart.timeScale().timeToCoordinate(fib.b.time as UTCTimestamp);
+  const yA = series.priceToCoordinate(fib.a.price);
+  const yB = series.priceToCoordinate(fib.b.price);
+  if (xA == null || xB == null || yA == null || yB == null) return null;
+  return { xA, xB, yA, yB };
+}
+
+/** Returns the topmost fib under the pointer (diagonal, anchors, or level segments). */
+function hitTestFib(
+  chart: IChartApi,
+  series: ISeriesApi<"Candlestick">,
+  fibs: FibDrawing[],
+  x: number,
+  y: number,
+): FibDrawing | null {
+  const halfBar = Math.max(6, chart.timeScale().options().barSpacing / 2);
+  const diagTolerance = Math.max(9, halfBar);
+  const anchorTolerance = Math.max(10, halfBar + 2);
+  for (let i = fibs.length - 1; i >= 0; i--) {
+    const fib = fibs[i];
+    const g = fibGeometry(chart, series, fib);
+    if (!g) continue;
+    if (distToSegment(x, y, g.xA, g.yA, g.xB, g.yB) <= diagTolerance) return fib;
+    if (Math.hypot(x - g.xA, y - g.yA) <= anchorTolerance || Math.hypot(x - g.xB, y - g.yB) <= anchorTolerance) return fib;
+    if (x >= Math.min(g.xA, g.xB) - 3 && x <= Math.max(g.xA, g.xB) + 3) {
+      for (const lvl of fib.levels) {
+        if (!lvl.enabled) continue;
+        const ly = series.priceToCoordinate(fibPrice(fib.a.price, fib.b.price, lvl.ratio));
+        if (ly != null && Math.abs(y - ly) <= 5) return fib;
+      }
+    }
+  }
+  return null;
+}
+
+function findBarIndex(bars: Bar[], ts: number): number {
+  if (bars.length === 0) return 0;
+  let lo = 0;
+  let hi = bars.length - 1;
+  while (lo < hi) {
+    const mid = (lo + hi) >> 1;
+    if (bars[mid].ts < ts) lo = mid + 1;
+    else hi = mid;
+  }
+  return lo;
+}
+
+function drawFib(
+  ctx: CanvasRenderingContext2D,
+  series: ISeriesApi<"Candlestick">,
+  fib: FibDrawing,
+  g: FibGeometry,
+  digits: number,
+): void {
+  const { xA, xB, yA, yB } = g;
+  const left = Math.min(xA, xB);
+  const right = Math.max(xA, xB);
+  ctx.save();
+
+  // Diagonal connecting the two swing points.
+  ctx.strokeStyle = hexToRgba(fib.color, 0.85);
+  ctx.lineWidth = 1;
+  ctx.setLineDash([2, 4]);
+  ctx.beginPath();
+  ctx.moveTo(xA, yA);
+  ctx.lineTo(xB, yB);
+  ctx.stroke();
+
+  // Horizontal levels, spanning only between the two clicked points.
+  ctx.setLineDash([4, 4]);
+  for (const lvl of fib.levels) {
+    if (!lvl.enabled) continue;
+    const price = fibPrice(fib.a.price, fib.b.price, lvl.ratio);
+    const y = series.priceToCoordinate(price);
+    if (y == null) continue;
+    const golden = Math.abs(lvl.ratio - 0.618) < 1e-9;
+    ctx.strokeStyle = hexToRgba(fib.color, golden ? 0.95 : 0.8);
+    ctx.lineWidth = golden ? 1.6 : 1;
+    ctx.beginPath();
+    ctx.moveTo(left, y);
+    ctx.lineTo(right, y);
+    ctx.stroke();
+
+    ctx.setLineDash([]);
+    ctx.fillStyle = fib.color;
+    ctx.font = "10px ui-monospace, SFMono-Regular, Menlo, Consolas, monospace";
+    ctx.textAlign = "right";
+    ctx.textBaseline = "bottom";
+    ctx.fillText(`${ratioLabel(lvl.ratio)} ${price.toFixed(digits)}`, right - 3, y - 2);
+    ctx.setLineDash([4, 4]);
+  }
+
+  // Anchor handles.
+  ctx.setLineDash([]);
+  ctx.fillStyle = fib.color;
+  for (const [x, y] of [
+    [xA, yA],
+    [xB, yB],
+  ] as const) {
+    ctx.beginPath();
+    ctx.arc(x, y, 3, 0, Math.PI * 2);
+    ctx.fill();
+  }
+  ctx.restore();
+}
+
+function drawOverlay(
+  canvas: HTMLCanvasElement,
+  chart: IChartApi | null,
+  series: ISeriesApi<"Candlestick"> | null,
+  data: LoadedData | null,
+  fibs: FibDrawing[],
+  fibMode: FibMode,
+  anchor: FibAnchor | null,
+): void {
+  const w = canvas.clientWidth;
+  const h = canvas.clientHeight;
+  if (w === 0 || h === 0) return;
+  const dpr = window.devicePixelRatio || 1;
+  const cw = Math.max(1, Math.round(w * dpr));
+  const ch = Math.max(1, Math.round(h * dpr));
+  if (canvas.width !== cw) canvas.width = cw;
+  if (canvas.height !== ch) canvas.height = ch;
+  const ctx = canvas.getContext("2d");
+  if (!ctx) return;
+  ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+  ctx.clearRect(0, 0, w, h);
+  if (!chart || !series || !data) return;
+
+  const digits = getSymbolSpec(data.symbol).digits;
+  for (const fib of fibs) {
+    const g = fibGeometry(chart, series, fib);
+    if (g) drawFib(ctx, series, fib, g, digits);
+  }
+
+  if (fibMode === "second" && anchor != null) {
+    const y = series.priceToCoordinate(anchor.price);
+    if (y != null) {
+      ctx.save();
+      ctx.strokeStyle = "rgba(245,158,11,0.9)";
+      ctx.setLineDash([4, 4]);
+      ctx.beginPath();
+      ctx.moveTo(0, y);
+      ctx.lineTo(w, y);
+      ctx.stroke();
+      ctx.setLineDash([]);
+      ctx.fillStyle = "#f59e0b";
+      ctx.font = "10px ui-monospace, SFMono-Regular, Menlo, Consolas, monospace";
+      ctx.textAlign = "left";
+      ctx.textBaseline = "bottom";
+      ctx.fillText(`0% ${anchor.price.toFixed(digits)} — click swing point 2`, 8, y - 2);
+      ctx.restore();
+    }
+  }
+}
+
+interface DragState {
+  fib: FibDrawing;
+  idxA: number;
+  idxB: number;
+  startX: number;
+  startY: number;
+  moved: boolean;
+}
+
 export function Chart() {
   const containerRef = useRef<HTMLDivElement | null>(null);
+  const overlayRef = useRef<HTMLCanvasElement | null>(null);
   const chartRef = useRef<IChartApi | null>(null);
   const candleRef = useRef<ISeriesApi<"Candlestick"> | null>(null);
   const volRef = useRef<ISeriesApi<"Histogram"> | null>(null);
@@ -68,15 +252,19 @@ export function Chart() {
   const loadedRef = useRef<LoadedData | null>(null);
   const markCountRef = useRef(-1);
 
-  // Drawing tool state
-  const [fibs, setFibs] = useState<Fib[]>([]);
+  // Fibonacci state
+  const [fibs, setFibs] = useState<FibDrawing[]>([]);
   const [fibMode, setFibMode] = useState<FibMode>(null);
-  const [anchor, setAnchor] = useState<number | null>(null);
+  const [anchor, setAnchor] = useState<FibAnchor | null>(null);
+  const [editorFib, setEditorFib] = useState<number | null>(null);
+  const [menu, setMenu] = useState<{ fibId: number; x: number; y: number } | null>(null);
   const fibSeq = useRef(1);
-  const fibLinesRef = useRef<IPriceLine[]>([]);
   const fibLoadedRef = useRef<LoadedData | null>(null);
   const fibModeRef = useRef<FibMode>(null);
-  const anchorRef = useRef<number | null>(null);
+  const anchorRef = useRef<FibAnchor | null>(null);
+  const fibsRef = useRef<FibDrawing[]>([]);
+  const dragRef = useRef<DragState | null>(null);
+  const posRef = useRef(0);
 
   const loaded = useStore((s) => s.loaded);
   const pos = useStore((s) => s.pos);
@@ -84,14 +272,18 @@ export function Chart() {
   const sim = useStore((s) => s.sim);
   const running = useStore((s) => s.running);
 
-  const changeFibMode = (mode: FibMode) => {
-    fibModeRef.current = mode;
-    setFibMode(mode);
-  };
-  const changeAnchor = (price: number | null) => {
-    anchorRef.current = price;
-    setAnchor(price);
-  };
+  useEffect(() => {
+    fibModeRef.current = fibMode;
+  }, [fibMode]);
+  useEffect(() => {
+    anchorRef.current = anchor;
+  }, [anchor]);
+  useEffect(() => {
+    fibsRef.current = fibs;
+  }, [fibs]);
+  useEffect(() => {
+    posRef.current = pos;
+  }, [pos]);
 
   useEffect(() => {
     const el = containerRef.current;
@@ -133,106 +325,193 @@ export function Chart() {
     };
   }, []);
 
-  // ---- Fibonacci: two-click placement on the chart.
-  // Native DOM listeners are used instead of chart.subscribeClick because the library
-  // swallows a second click within its double-click window when it lands >5px away.
+  // New dataset resets drawings.
+  useEffect(() => {
+    if (fibLoadedRef.current === loaded) return;
+    fibLoadedRef.current = loaded;
+    setFibs([]);
+    setFibMode(null);
+    setAnchor(null);
+    setEditorFib(null);
+    setMenu(null);
+  }, [loaded]);
+
+  // Overlay redraw loop while there is something to show.
+  useEffect(() => {
+    const canvas = overlayRef.current;
+    if (!canvas) return;
+    const loop = () => {
+      drawOverlay(canvas, chartRef.current, candleRef.current, loadedRef.current, fibsRef.current, fibModeRef.current, anchorRef.current);
+      return requestAnimationFrame(loop);
+    };
+    if (fibs.length === 0 && fibMode === null) {
+      drawOverlay(canvas, chartRef.current, candleRef.current, loadedRef.current, [], null, null);
+      return;
+    }
+    let raf = requestAnimationFrame(loop);
+    return () => cancelAnimationFrame(raf);
+  }, [fibs.length, fibMode, loaded]);
+
+  // Chart interaction: place points, drag the whole tool, right-click to edit.
   useEffect(() => {
     const el = containerRef.current;
-    const candles = candleRef.current;
-    if (!el || !candles) return;
-    let downX = 0;
-    let downY = 0;
-    let downT = 0;
-    let pressed = false;
+    if (!el) return;
+    const local = (e: MouseEvent) => {
+      const r = el.getBoundingClientRect();
+      return { x: e.clientX - r.left, y: e.clientY - r.top };
+    };
+    let down: { x: number; y: number; t: number } | null = null;
+
     const onDown = (e: MouseEvent) => {
       if (e.button !== 0) return;
-      pressed = true;
-      downX = e.clientX;
-      downY = e.clientY;
-      downT = performance.now();
+      down = { x: e.clientX, y: e.clientY, t: performance.now() };
+      const chart = chartRef.current;
+      const series = candleRef.current;
+      const data = loadedRef.current;
+      if (!chart || !series || !data || fibModeRef.current) return;
+      const p = local(e);
+      const fib = hitTestFib(chart, series, fibsRef.current, p.x, p.y);
+      if (!fib) return;
+      e.stopPropagation();
+      e.preventDefault();
+      dragRef.current = {
+        fib,
+        idxA: findBarIndex(data.bars, fib.a.time),
+        idxB: findBarIndex(data.bars, fib.b.time),
+        startX: e.clientX,
+        startY: e.clientY,
+        moved: false,
+      };
     };
+
+    const onMove = (e: MouseEvent) => {
+      const d = dragRef.current;
+      const chart = chartRef.current;
+      const series = candleRef.current;
+      const data = loadedRef.current;
+      if (!d || !chart || !series || !data) return;
+      e.stopPropagation();
+      e.preventDefault();
+      const r = el.getBoundingClientRect();
+      const pNow = series.coordinateToPrice(e.clientY - r.top);
+      const pStart = series.coordinateToPrice(d.startY - r.top);
+      if (pNow == null || pStart == null) return;
+      const priceDelta = pNow - pStart;
+      const barSpacing = Math.max(1, chart.timeScale().options().barSpacing);
+      let shift = Math.round((e.clientX - d.startX) / barSpacing);
+      const processed = Math.max(0, Math.min(posRef.current, data.bars.length));
+      const maxShift = processed - 1 - Math.max(d.idxA, d.idxB);
+      const minShift = -Math.min(d.idxA, d.idxB);
+      if (maxShift < minShift) return;
+      shift = Math.max(minShift, Math.min(maxShift, shift));
+      const timeA = data.bars[d.idxA + shift].ts;
+      const timeB = data.bars[d.idxB + shift].ts;
+      const { fib } = d;
+      d.moved = true;
+      setFibs((fs) =>
+        fs.map((f) =>
+          f.id === fib.id
+            ? {
+                ...f,
+                a: { time: timeA, price: Math.max(0.00001, fib.a.price + priceDelta) },
+                b: { time: timeB, price: Math.max(0.00001, fib.b.price + priceDelta) },
+              }
+            : f,
+        ),
+      );
+    };
+
     const onUp = (e: MouseEvent) => {
-      if (!pressed || e.button !== 0) return;
-      pressed = false;
-      const moved = Math.hypot(e.clientX - downX, e.clientY - downY);
-      if (moved > 6 || performance.now() - downT > 600) return; // it was a drag, not a click
+      if (e.button !== 0) return;
+      const d = dragRef.current;
+      if (d) {
+        dragRef.current = null;
+        e.stopPropagation();
+        if (d.moved) e.preventDefault();
+        return;
+      }
+      if (!down) return;
+      const movedPx = Math.hypot(e.clientX - down.x, e.clientY - down.y);
+      const heldMs = performance.now() - down.t;
+      down = null;
+      if (movedPx > 6 || heldMs > 600) return;
       const mode = fibModeRef.current;
       if (!mode) return;
-      const rect = el.getBoundingClientRect();
-      const price = candles.coordinateToPrice(e.clientY - rect.top);
+      const chart = chartRef.current;
+      const series = candleRef.current;
+      if (!chart || !series) return;
+      const p = local(e);
+      const price = series.coordinateToPrice(p.y);
       if (price == null) return;
+      let timeNum: number | null = null;
+      const time = chart.timeScale().coordinateToTime(p.x);
+      if (typeof time === "number") timeNum = time;
+      else {
+        const logical = chart.timeScale().coordinateToLogical(p.x);
+        const bars = loadedRef.current?.bars ?? [];
+        const processed = Math.max(0, Math.min(posRef.current, bars.length));
+        if (logical != null && processed > 0) {
+          const idx = Math.max(0, Math.min(processed - 1, Math.round(logical)));
+          timeNum = bars[idx].ts;
+        }
+      }
+      if (timeNum == null) return;
+      const point: FibAnchor = { time: timeNum, price };
       if (mode === "first") {
-        changeAnchor(price);
-        changeFibMode("second");
+        setAnchor(point);
+        setFibMode("second");
         return;
       }
       const a = anchorRef.current;
-      if (a == null) return;
-      setFibs((fs) => [...fs, { id: fibSeq.current++, a, b: price }]);
-      changeAnchor(null);
-      changeFibMode(null);
+      if (!a) return;
+      setFibs((fs) => [
+        ...fs,
+        { id: fibSeq.current++, a, b: point, color: DEFAULT_FIB_COLOR, levels: defaultFibLevels() },
+      ]);
+      setAnchor(null);
+      setFibMode(null);
     };
-    el.addEventListener("mousedown", onDown);
-    el.addEventListener("mouseup", onUp);
+
+    const onContext = (e: MouseEvent) => {
+      const chart = chartRef.current;
+      const series = candleRef.current;
+      if (!chart || !series) return;
+      const p = local(e);
+      const fib = hitTestFib(chart, series, fibsRef.current, p.x, p.y);
+      if (!fib) return;
+      e.preventDefault();
+      e.stopPropagation();
+      setMenu({ fibId: fib.id, x: e.clientX, y: e.clientY });
+    };
+
+    el.addEventListener("mousedown", onDown, true);
+    el.addEventListener("contextmenu", onContext, true);
+    window.addEventListener("mousemove", onMove, true);
+    window.addEventListener("mouseup", onUp, true);
     return () => {
-      el.removeEventListener("mousedown", onDown);
-      el.removeEventListener("mouseup", onUp);
+      el.removeEventListener("mousedown", onDown, true);
+      el.removeEventListener("contextmenu", onContext, true);
+      window.removeEventListener("mousemove", onMove, true);
+      window.removeEventListener("mouseup", onUp, true);
     };
   }, []);
 
-  // ---- Escape cancels an in-progress fib
+  // Escape closes the editor / cancels a drawing in progress.
   useEffect(() => {
-    if (!fibMode) return;
     const onKey = (e: KeyboardEvent) => {
-      if (e.key === "Escape") {
-        changeFibMode(null);
-        changeAnchor(null);
+      if (e.key !== "Escape") return;
+      if (menu) return setMenu(null);
+      if (editorFib != null) return setEditorFib(null);
+      if (fibMode) {
+        setFibMode(null);
+        setAnchor(null);
       }
     };
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
-  }, [fibMode]);
+  }, [menu, editorFib, fibMode]);
 
-  // ---- render fib levels (independent of replay position lines)
-  useEffect(() => {
-    const candles = candleRef.current;
-    if (!candles) return;
-    for (const line of fibLinesRef.current) candles.removePriceLine(line);
-    fibLinesRef.current = [];
-
-    if (fibLoadedRef.current !== loaded) {
-      fibLoadedRef.current = loaded;
-      if (fibs.length > 0) setFibs([]);
-      if (fibMode) changeFibMode(null);
-      if (anchorRef.current != null) changeAnchor(null);
-      return;
-    }
-    if (!loaded) return;
-    const spec = getSymbolSpec(loaded.symbol);
-    const add = (price: number, color: string, title: string, width: 1 | 2 = 1) => {
-      fibLinesRef.current.push(
-        candles.createPriceLine({
-          price,
-          color,
-          lineWidth: width,
-          lineStyle: LineStyle.Dashed,
-          axisLabelVisible: true,
-          title,
-        }),
-      );
-    };
-    for (const fib of fibs) {
-      for (const lvl of fibLevels(fib.a, fib.b)) {
-        const color = lvl.golden ? "#f59e0b" : lvl.ratio === 0.5 ? "#a78bfa" : "#22d3ee";
-        add(lvl.price, color, `${lvl.label} ${lvl.price.toFixed(spec.digits)}`, lvl.golden ? 2 : 1);
-      }
-    }
-    if (fibMode === "second" && anchorRef.current != null) {
-      add(anchorRef.current, "#f59e0b", `0% ${anchorRef.current.toFixed(spec.digits)} — click 2nd point`, 2);
-    }
-  }, [fibs, fibMode, anchor, loaded]);
-
-  // ---- candles, volume, trade markers, order/position price lines
+  // Candles, volume, markers, order/position lines.
   useEffect(() => {
     const chart = chartRef.current;
     const candles = candleRef.current;
@@ -350,19 +629,22 @@ export function Chart() {
   const startFib = () => {
     if (!loaded) return;
     if (fibMode) {
-      changeFibMode(null);
-      changeAnchor(null);
+      setFibMode(null);
+      setAnchor(null);
       return;
     }
-    changeAnchor(null);
-    changeFibMode("first");
+    setAnchor(null);
+    setFibMode("first");
   };
 
   const clearFibs = () => {
     setFibs([]);
-    changeFibMode(null);
-    changeAnchor(null);
+    setFibMode(null);
+    setAnchor(null);
+    setEditorFib(null);
   };
+
+  const editorTarget = editorFib != null ? fibs.find((f) => f.id === editorFib) ?? null : null;
 
   return (
     <div className="chart-wrap">
@@ -385,7 +667,7 @@ export function Chart() {
           className={`tool-btn ${fibMode ? "active" : ""}`}
           onClick={startFib}
           disabled={!loaded || pos === 0}
-          title="Click two swing points to draw Fibonacci retracement levels (Esc cancels)"
+          title="Click two swing points to draw Fibonacci; drag the line to move it; right-click the diagonal to edit levels and colour (Esc cancels)"
         >
           {fibMode ? "✕ Fib" : "Fibonacci"}
         </button>
@@ -398,6 +680,8 @@ export function Chart() {
       </div>
 
       <div ref={containerRef} className="chart-canvas" />
+      <canvas ref={overlayRef} className="chart-overlay" />
+
       {!loaded ? (
         <div className="chart-empty">
           <div className="chart-empty-title">No market data</div>
@@ -413,6 +697,28 @@ export function Chart() {
             Press ▶ Play (or ⏭ Step) to begin, then trade from the order panel.
           </div>
         </div>
+      ) : null}
+
+      {menu ? (
+        <ContextMenu
+          x={menu.x}
+          y={menu.y}
+          items={[
+            { label: "Edit levels & colour…", onClick: () => setEditorFib(menu.fibId) },
+            { label: "Remove Fibonacci", danger: true, onClick: () => setFibs((fs) => fs.filter((f) => f.id !== menu.fibId)) },
+          ]}
+          onClose={() => setMenu(null)}
+        />
+      ) : null}
+
+      {editorTarget ? (
+        <FibEditor
+          fib={editorTarget}
+          digits={spec?.digits ?? 5}
+          onChange={(updated) => setFibs((fs) => fs.map((f) => (f.id === updated.id ? updated : f)))}
+          onClose={() => setEditorFib(null)}
+          onRemove={() => setFibs((fs) => fs.filter((f) => f.id !== editorTarget.id))}
+        />
       ) : null}
     </div>
   );
