@@ -8,8 +8,7 @@ visual mode**: load historical data, press play, and trade against a real *accou
 balance, equity, margin, free margin, stop-out, swap, commission, pending orders and a
 full trade statement. Everything runs in your browser; your data never leaves the machine.
 
-> **Live demo:** <https://your-github-username.github.io/forex-replay/> — no install needed.
-> *(Replace with your Pages URL once deployed; see [Deploying](#deploying), then delete this note.)*
+> **Live demo:** <https://Nanthasubbiah.github.io/forex-replay/> — no install needed.
 >
 > Not affiliated with MetaQuotes. It re-implements MT4 *account semantics*, not MQL4/`.ex4`.
 
