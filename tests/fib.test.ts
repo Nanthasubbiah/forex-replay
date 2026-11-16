@@ -73,3 +73,22 @@ describe("fib drawing helpers", () => {
     expect(distToSegment(0, 0, 0, 0, 0, 0)).toBeCloseTo(0);
   });
 });
+
+import { FIB_COLOR_BY_KIND, fibLevelsFor } from "../src/lib/fib";
+
+describe("fib tool kinds", () => {
+  it("retracement has 7 levels", () => {
+    expect(fibLevelsFor("retracement")).toHaveLength(7);
+  });
+
+  it("extension adds 127.2 and 161.8 projections", () => {
+    const levels = fibLevelsFor("extension");
+    expect(levels).toHaveLength(9);
+    expect(levels.at(-2)).toEqual({ ratio: 1.272, enabled: true });
+    expect(levels.at(-1)).toEqual({ ratio: 1.618, enabled: true });
+  });
+
+  it("uses distinct default colours per kind", () => {
+    expect(FIB_COLOR_BY_KIND.retracement).not.toBe(FIB_COLOR_BY_KIND.extension);
+  });
+});

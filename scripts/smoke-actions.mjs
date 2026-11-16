@@ -110,50 +110,129 @@ try {
   await page.waitForTimeout(300);
   results.positionsAfterContextClose = await tabCount(0);
 
-  // ---- Fibonacci tool: two chart clicks
-  await page.locator(".tool-btn").first().click();
+  // ---- Fibonacci via the top toolbar (dropdown: retracement / extension)
   const box = await page.locator(".chart-canvas").boundingBox();
+  const stGet = () => page.evaluate(() => {
+    const s = window.__store.getState();
+    return { fibs: s.fibs, tool: s.fibTool, anchor: s.fibAnchor };
+  });
+  const toPage = async (time, price) => {
+    const pt = await page.evaluate(({ time, price }) => {
+      const h = window.__chartTest;
+      return { x: h.toX(time), y: h.toY(price) };
+    }, { time, price });
+    return { x: box.x + pt.x, y: box.y + pt.y };
+  };
+
+  await page.locator(".toolbar-tab").first().click();
+  results.toolbarMenu = (await page.locator(".toolbar-menu").innerText()).replace(/\n/g, " | ");
+  await page.getByRole("menuitem", { name: /^Retracement/ }).click();
+  results.fibHint1 = await page.locator(".tool-hint").innerText();
+
   const p1 = { x: box.x + box.width * 0.3, y: box.y + box.height * 0.3 };
   const p2 = { x: box.x + box.width * 0.5, y: box.y + box.height * 0.55 };
   await page.mouse.click(p1.x, p1.y);
   await page.waitForTimeout(120);
-  results.fibHintAfterFirstClick = await page.locator(".tool-hint").innerText();
+  results.fibHint2 = await page.locator(".tool-hint").innerText();
   await page.mouse.click(p2.x, p2.y);
   await page.waitForTimeout(250);
-  results.fibChip = (await page.locator(".tool-chip").innerText()).trim();
+  let st = await stGet();
+  results.fibCreated = {
+    count: st.fibs.length,
+    levels: st.fibs[0].levels.length,
+    color: st.fibs[0].color,
+    toolCleared: st.tool === null,
+  };
   await page.screenshot({ path: "scripts/smoke-fib.png" });
 
-  // ---- right-click the drawing (anchor) -> editor
-  const mid = { x: (p1.x + p2.x) / 2, y: (p1.y + p2.y) / 2 };
-  await page.mouse.click(p1.x, p1.y, { button: "right" });
+  const fib0 = st.fibs[0];
+  const priceAt = (r) => fib0.a.price + (fib0.b.price - fib0.a.price) * r;
+  const spanTime = fib0.a.time; // a real bar time inside the drawn span
+
+  // ---- right-click the 61.8% level line -> quick hide
+  const lvl615 = await toPage(spanTime, priceAt(0.618));
+  await page.mouse.click(lvl615.x, lvl615.y, { button: "right" });
   await page.waitForTimeout(200);
-  results.fibMenuItems = (await page.locator(".ctx-item").allInnerTexts()).map((t) => t.trim());
+  results.fibLevelMenuItems = (await page.locator(".ctx-item").allInnerTexts()).map((t) => t.trim());
+  await page.getByRole("button", { name: /Hide 61.8% level/ }).click();
+  await page.waitForTimeout(200);
+  st = await stGet();
+  results.fib618Hidden = st.fibs[0].levels.find((l) => Math.abs(l.ratio - 0.618) < 1e-9).enabled === false;
+
+  // ---- drag the whole tool from the 50% level line
+  const pct50 = await toPage(spanTime, priceAt(0.5));
+  await page.mouse.move(pct50.x, pct50.y);
+  await page.mouse.down();
+  await page.mouse.move(pct50.x + 60, pct50.y + 40, { steps: 5 });
+  await page.mouse.up();
+  await page.waitForTimeout(250);
+  const stMove = await stGet();
+  const fib1 = stMove.fibs[0];
+  const dA = fib1.a.price - fib0.a.price;
+  const dB = fib1.b.price - fib0.b.price;
+  results.wholeDrag = {
+    bothPricesMoved: Math.abs(dA) > 0.0001 && Math.abs(dB) > 0.0001,
+    equalDeltas: Math.abs(dA - dB) < 1e-9,
+    timesShifted: fib1.a.time !== fib0.a.time && fib1.b.time !== fib0.b.time,
+  };
+
+  // ---- drag anchor A only (resize the swing)
+  const anchorA = await toPage(fib1.a.time, fib1.a.price);
+  await page.mouse.move(anchorA.x, anchorA.y);
+  await page.mouse.down();
+  await page.mouse.move(anchorA.x + 55, anchorA.y + 35, { steps: 5 });
+  await page.mouse.up();
+  await page.waitForTimeout(250);
+  const stAnchor = await stGet();
+  const fib2 = stAnchor.fibs[0];
+  results.anchorDrag = {
+    aPriceChanged: fib2.a.price !== fib1.a.price,
+    bUnchanged: fib2.b.price === fib1.b.price && fib2.b.time === fib1.b.time,
+  };
+
+  // ---- editor on the retracement fib (edit opens via right-click on its body)
+  const fibNow = stAnchor.fibs[0];
+  const bodyPt = await toPage(fibNow.a.time, fibNow.a.price + (fibNow.b.price - fibNow.a.price) * 0.5);
+  await page.mouse.click(bodyPt.x, bodyPt.y, { button: "right" });
+  await page.waitForTimeout(200);
   await page.getByRole("button", { name: "Edit levels & colour…" }).click();
   await page.waitForTimeout(200);
-  results.fibEditorOpen = await page.locator(".fib-editor").isVisible();
   results.fibRowsBefore = await page.locator(".fib-row").count();
-
-  // toggle the 23.6% level off, remove 78.6%, add a 127.2% level, pick a colour
   await page.locator(".fib-row").nth(1).locator('input[type="checkbox"]').click();
   await page.locator(".fib-row").nth(5).locator(".link-btn").click();
   await page.locator(".fib-add input").fill("127.2");
   await page.locator(".fib-add button").click();
   await page.locator(".fib-swatch").nth(1).click();
   await page.waitForTimeout(150);
-  results.fibRowsAfter = await page.locator(".fib-row").count();
   results.fibColors = await page.locator(".fib-swatch.active").evaluate((el) => getComputedStyle(el).backgroundColor);
   await page.getByRole("button", { name: "Done" }).click();
   await page.waitForTimeout(200);
-  results.fibEditorClosed = !(await page.locator(".fib-editor").isVisible());
-  results.fibChipAfterEdit = (await page.locator(".tool-chip").innerText()).trim();
+  st = await stGet();
+  results.fibAfterEdit = {
+    count: st.fibs.length,
+    levels: st.fibs[0].levels.length,
+    has127: st.fibs[0].levels.some((l) => Math.abs(l.ratio - 1.272) < 1e-9),
+    level23enabled: st.fibs[0].levels.find((l) => Math.abs(l.ratio - 0.236) < 1e-9)?.enabled,
+    has786: st.fibs[0].levels.some((l) => Math.abs(l.ratio - 0.786) < 1e-9),
+    color: st.fibs[0].color,
+  };
 
-  // ---- drag the whole tool down-right
-  await page.mouse.move(mid.x, mid.y);
-  await page.mouse.down();
-  await page.mouse.move(mid.x + 70, mid.y + 50, { steps: 6 });
-  await page.mouse.up();
-  await page.waitForTimeout(300);
-  results.fibChipAfterDrag = (await page.locator(".tool-chip").innerText()).trim();
+  // ---- Extension tool (adds 127.2 / 161.8 directly)
+  await page.locator(".toolbar-tab").first().click();
+  await page.getByRole("menuitem", { name: /^Extension/ }).click();
+  await page.mouse.click(p1.x, p1.y);
+  await page.waitForTimeout(100);
+  await page.mouse.click(p2.x, p2.y);
+  await page.waitForTimeout(250);
+  st = await stGet();
+  results.fibExtension = {
+    count: st.fibs.length,
+    levels: st.fibs[1]?.levels.length,
+    color: st.fibs[1]?.color,
+    has1618: st.fibs[1]?.levels.some((l) => Math.abs(l.ratio - 1.618) < 1e-9) ?? false,
+    toolCleared: st.tool === null,
+  };
+  results.fibChip = (await page.locator(".tool-chip").innerText()).trim();
 
   await page.screenshot({ path: shot });
 } catch (e) {

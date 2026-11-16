@@ -46,17 +46,21 @@ prices. M5+ is free; M1 and the current year need a free account on their site.
 - Right-click any row in *Positions* to **modify SL/TP** or **close**, and in *Open orders*
   to **modify** (trigger price / SL / TP) or **cancel**. All validation is done by the engine
   and errors appear as toasts.
-- **Fibonacci retracement tool**: press `Fibonacci`, then click the swing start and end on
-  the chart. The tool draws:
-  - a dotted diagonal between the two clicked points,
+- **Fibonacci drawing tools** live in the top chart toolbar: the `Fibonacci ▾` tab opens a
+  dropdown with **Retracement** (0–100% between two swing points) and **Extension**
+  (retracement plus auto-drawn 127.2% and 161.8% projections). After choosing a tool, click
+  the swing start and end on the chart. Each drawing renders:
+  - a dotted diagonal between the two clicked points with anchor handles,
   - horizontal level segments **that span only between those two points** (not the whole
-    chart), at 0 / 23.6 / 38.2 / 50 / 61.8 / 78.6 / 100% (61.8% highlighted), labels showing
-    each level's price.
+    chart), labelled with ratio and price (61.8% highlighted).
 
-  **Drag** anywhere on the drawing (diagonal, level lines or anchor handles) to move the
-  whole tool. **Right-click** it to open the editor, where you can show/hide any level,
-  remove a level, add a custom level (e.g. 127.2%), or change the colour. `Esc` cancels a
-  drawing in progress; `Clear` removes all fib tools.
+  Interaction:
+  - **Drag the diagonal** (or any level line) to move the whole tool;
+  - **drag an anchor handle** to resize / re-aim the swing;
+  - **right-click a level line** to instantly hide/show that single level; **right-click the
+    diagonal or anchors** for the full editor: show/hide, remove and add levels (custom %s),
+    colour picker + palette, and remove the tool;
+  - `Esc` cancels a drawing in progress; `Clear` (toolbar) removes all drawings.
 
 ### Replay & analysis
 - Bar-by-bar replay with play/pause/step, 1×–400× speed, progress + UTC timestamp.

@@ -1,6 +1,7 @@
 import { useEffect } from "react";
 import { useStore } from "../store";
 import { Chart } from "./Chart";
+import { ChartToolbar } from "./ChartToolbar";
 import { AccountPanel } from "./AccountPanel";
 import { OrderPanel } from "./OrderPanel";
 import { ReplayBar } from "./ReplayBar";
@@ -50,6 +51,7 @@ export default function App() {
           <OrderPanel />
         </aside>
         <main className="maincol">
+          <ChartToolbar />
           <Chart />
           <ReplayBar />
           <BottomTabs />

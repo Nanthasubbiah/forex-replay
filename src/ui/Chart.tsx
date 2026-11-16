@@ -20,21 +20,21 @@ import type { Simulator } from "../engine/simulator";
 import type { Bar, PendingType } from "../engine/types";
 import { getSymbolSpec } from "../engine/symbols";
 import {
-  DEFAULT_FIB_COLOR,
-  defaultFibLevels,
   distToSegment,
+  FIB_COLOR_BY_KIND,
+  fibLevelsFor,
   fibPrice,
   ratioLabel,
+  toggleLevel,
   type FibAnchor,
   type FibDrawing,
 } from "../lib/fib";
 import { hexToRgba } from "../lib/color";
 import { FibEditor } from "./FibEditor";
-import { ContextMenu } from "./ContextMenu";
+import { ContextMenu, type MenuItem } from "./ContextMenu";
 import { fmtPrice, fmtTime } from "../lib/format";
 
 type MarkersApi = ISeriesMarkersPluginApi<Time>;
-type FibMode = "first" | "second" | null;
 
 const PENDING_LABELS: Record<PendingType, string> = {
   buy_limit: "BUY LIMIT",
@@ -48,6 +48,22 @@ interface FibGeometry {
   xB: number;
   yA: number;
   yB: number;
+}
+
+interface FibHit {
+  fib: FibDrawing;
+  /** Set when the pointer is over a horizontal level segment. */
+  levelRatio?: number;
+}
+
+interface DragState {
+  mode: "move" | "anchorA" | "anchorB";
+  fib: FibDrawing;
+  idxA: number;
+  idxB: number;
+  startX: number;
+  startY: number;
+  moved: boolean;
 }
 
 function buildMarkers(sim: Simulator): SeriesMarker<Time>[] {
@@ -82,14 +98,13 @@ function fibGeometry(
   return { xA, xB, yA, yB };
 }
 
-/** Returns the topmost fib under the pointer (diagonal, anchors, or level segments). */
 function hitTestFib(
   chart: IChartApi,
   series: ISeriesApi<"Candlestick">,
   fibs: FibDrawing[],
   x: number,
   y: number,
-): FibDrawing | null {
+): FibHit | null {
   const halfBar = Math.max(6, chart.timeScale().options().barSpacing / 2);
   const diagTolerance = Math.max(9, halfBar);
   const anchorTolerance = Math.max(10, halfBar + 2);
@@ -97,15 +112,38 @@ function hitTestFib(
     const fib = fibs[i];
     const g = fibGeometry(chart, series, fib);
     if (!g) continue;
-    if (distToSegment(x, y, g.xA, g.yA, g.xB, g.yB) <= diagTolerance) return fib;
-    if (Math.hypot(x - g.xA, y - g.yA) <= anchorTolerance || Math.hypot(x - g.xB, y - g.yB) <= anchorTolerance) return fib;
-    if (x >= Math.min(g.xA, g.xB) - 3 && x <= Math.max(g.xA, g.xB) + 3) {
+    const left = Math.min(g.xA, g.xB);
+    const right = Math.max(g.xA, g.xB);
+    if (x >= left - 3 && x <= right + 3) {
       for (const lvl of fib.levels) {
         if (!lvl.enabled) continue;
         const ly = series.priceToCoordinate(fibPrice(fib.a.price, fib.b.price, lvl.ratio));
-        if (ly != null && Math.abs(y - ly) <= 5) return fib;
+        if (ly != null && Math.abs(y - ly) <= 5) return { fib, levelRatio: lvl.ratio };
       }
     }
+    if (distToSegment(x, y, g.xA, g.yA, g.xB, g.yB) <= diagTolerance) return { fib };
+    if (Math.hypot(x - g.xA, y - g.yA) <= anchorTolerance || Math.hypot(x - g.xB, y - g.yB) <= anchorTolerance) {
+      return { fib };
+    }
+  }
+  return null;
+}
+
+function hitAnchorHandle(
+  chart: IChartApi,
+  series: ISeriesApi<"Candlestick">,
+  fibs: FibDrawing[],
+  x: number,
+  y: number,
+): { fib: FibDrawing; side: "a" | "b" } | null {
+  const halfBar = Math.max(6, chart.timeScale().options().barSpacing / 2);
+  const tol = Math.max(10, halfBar + 2);
+  for (let i = fibs.length - 1; i >= 0; i--) {
+    const fib = fibs[i];
+    const g = fibGeometry(chart, series, fib);
+    if (!g) continue;
+    if (Math.hypot(x - g.xA, y - g.yA) <= tol) return { fib, side: "a" };
+    if (Math.hypot(x - g.xB, y - g.yB) <= tol) return { fib, side: "b" };
   }
   return null;
 }
@@ -187,8 +225,8 @@ function drawOverlay(
   series: ISeriesApi<"Candlestick"> | null,
   data: LoadedData | null,
   fibs: FibDrawing[],
-  fibMode: FibMode,
   anchor: FibAnchor | null,
+  toolColor: string,
 ): void {
   const w = canvas.clientWidth;
   const h = canvas.clientHeight;
@@ -210,18 +248,18 @@ function drawOverlay(
     if (g) drawFib(ctx, series, fib, g, digits);
   }
 
-  if (fibMode === "second" && anchor != null) {
+  if (anchor != null) {
     const y = series.priceToCoordinate(anchor.price);
     if (y != null) {
       ctx.save();
-      ctx.strokeStyle = "rgba(245,158,11,0.9)";
+      ctx.strokeStyle = hexToRgba(toolColor, 0.9);
       ctx.setLineDash([4, 4]);
       ctx.beginPath();
       ctx.moveTo(0, y);
       ctx.lineTo(w, y);
       ctx.stroke();
       ctx.setLineDash([]);
-      ctx.fillStyle = "#f59e0b";
+      ctx.fillStyle = toolColor;
       ctx.font = "10px ui-monospace, SFMono-Regular, Menlo, Consolas, monospace";
       ctx.textAlign = "left";
       ctx.textBaseline = "bottom";
@@ -229,15 +267,6 @@ function drawOverlay(
       ctx.restore();
     }
   }
-}
-
-interface DragState {
-  fib: FibDrawing;
-  idxA: number;
-  idxB: number;
-  startX: number;
-  startY: number;
-  moved: boolean;
 }
 
 export function Chart() {
@@ -252,16 +281,11 @@ export function Chart() {
   const loadedRef = useRef<LoadedData | null>(null);
   const markCountRef = useRef(-1);
 
-  // Fibonacci state
-  const [fibs, setFibs] = useState<FibDrawing[]>([]);
-  const [fibMode, setFibMode] = useState<FibMode>(null);
-  const [anchor, setAnchor] = useState<FibAnchor | null>(null);
   const [editorFib, setEditorFib] = useState<number | null>(null);
-  const [menu, setMenu] = useState<{ fibId: number; x: number; y: number } | null>(null);
+  const [menu, setMenu] = useState<{ fibId: number; levelRatio?: number; x: number; y: number } | null>(null);
   const fibSeq = useRef(1);
-  const fibLoadedRef = useRef<LoadedData | null>(null);
-  const fibModeRef = useRef<FibMode>(null);
-  const anchorRef = useRef<FibAnchor | null>(null);
+  const fibToolRef = useRef<string | null>(null);
+  const fibAnchorRef = useRef<FibAnchor | null>(null);
   const fibsRef = useRef<FibDrawing[]>([]);
   const dragRef = useRef<DragState | null>(null);
   const posRef = useRef(0);
@@ -271,13 +295,21 @@ export function Chart() {
   const version = useStore((s) => s.version);
   const sim = useStore((s) => s.sim);
   const running = useStore((s) => s.running);
+  const fibs = useStore((s) => s.fibs);
+  const fibTool = useStore((s) => s.fibTool);
+  const fibAnchor = useStore((s) => s.fibAnchor);
+  const setFibTool = useStore((s) => s.setFibTool);
+  const setFibAnchor = useStore((s) => s.setFibAnchor);
+  const addFib = useStore((s) => s.addFib);
+  const updateFib = useStore((s) => s.updateFib);
+  const removeFib = useStore((s) => s.removeFib);
 
   useEffect(() => {
-    fibModeRef.current = fibMode;
-  }, [fibMode]);
+    fibToolRef.current = fibTool;
+  }, [fibTool]);
   useEffect(() => {
-    anchorRef.current = anchor;
-  }, [anchor]);
+    fibAnchorRef.current = fibAnchor;
+  }, [fibAnchor]);
   useEffect(() => {
     fibsRef.current = fibs;
   }, [fibs]);
@@ -325,34 +357,40 @@ export function Chart() {
     };
   }, []);
 
-  // New dataset resets drawings.
+  // Dev-only inspection hook used by the headless smoke tests.
   useEffect(() => {
-    if (fibLoadedRef.current === loaded) return;
-    fibLoadedRef.current = loaded;
-    setFibs([]);
-    setFibMode(null);
-    setAnchor(null);
-    setEditorFib(null);
-    setMenu(null);
-  }, [loaded]);
+    if (!import.meta.env.DEV) return;
+    (window as unknown as { __chartTest?: unknown }).__chartTest = {
+      toX: (t: number) => chartRef.current?.timeScale().timeToCoordinate(t as UTCTimestamp) ?? null,
+      toY: (p: number) => candleRef.current?.priceToCoordinate(p) ?? null,
+    };
+  }, []);
 
   // Overlay redraw loop while there is something to show.
   useEffect(() => {
     const canvas = overlayRef.current;
     if (!canvas) return;
     const loop = () => {
-      drawOverlay(canvas, chartRef.current, candleRef.current, loadedRef.current, fibsRef.current, fibModeRef.current, anchorRef.current);
+      drawOverlay(
+        canvas,
+        chartRef.current,
+        candleRef.current,
+        loadedRef.current,
+        fibsRef.current,
+        fibAnchorRef.current,
+        fibToolRef.current ? FIB_COLOR_BY_KIND[fibToolRef.current as keyof typeof FIB_COLOR_BY_KIND] : "#2dd4bf",
+      );
       return requestAnimationFrame(loop);
     };
-    if (fibs.length === 0 && fibMode === null) {
-      drawOverlay(canvas, chartRef.current, candleRef.current, loadedRef.current, [], null, null);
+    if (fibs.length === 0 && fibTool === null) {
+      drawOverlay(canvas, chartRef.current, candleRef.current, loadedRef.current, [], null, "#2dd4bf");
       return;
     }
     let raf = requestAnimationFrame(loop);
     return () => cancelAnimationFrame(raf);
-  }, [fibs.length, fibMode, loaded]);
+  }, [fibs.length, fibTool, loaded]);
 
-  // Chart interaction: place points, drag the whole tool, right-click to edit.
+  // Chart interaction: place points, drag anchors/whole tool, right-click to edit.
   useEffect(() => {
     const el = containerRef.current;
     if (!el) return;
@@ -368,16 +406,19 @@ export function Chart() {
       const chart = chartRef.current;
       const series = candleRef.current;
       const data = loadedRef.current;
-      if (!chart || !series || !data || fibModeRef.current) return;
+      if (!chart || !series || !data || fibToolRef.current) return;
       const p = local(e);
-      const fib = hitTestFib(chart, series, fibsRef.current, p.x, p.y);
-      if (!fib) return;
+      const anchorHit = hitAnchorHandle(chart, series, fibsRef.current, p.x, p.y);
+      const hit = anchorHit ? null : hitTestFib(chart, series, fibsRef.current, p.x, p.y);
+      const target = anchorHit?.fib ?? hit?.fib;
+      if (!target) return;
       e.stopPropagation();
       e.preventDefault();
       dragRef.current = {
-        fib,
-        idxA: findBarIndex(data.bars, fib.a.time),
-        idxB: findBarIndex(data.bars, fib.b.time),
+        mode: anchorHit ? (anchorHit.side === "a" ? "anchorA" : "anchorB") : "move",
+        fib: target,
+        idxA: findBarIndex(data.bars, target.a.time),
+        idxB: findBarIndex(data.bars, target.b.time),
         startX: e.clientX,
         startY: e.clientY,
         moved: false,
@@ -398,27 +439,39 @@ export function Chart() {
       if (pNow == null || pStart == null) return;
       const priceDelta = pNow - pStart;
       const barSpacing = Math.max(1, chart.timeScale().options().barSpacing);
-      let shift = Math.round((e.clientX - d.startX) / barSpacing);
       const processed = Math.max(0, Math.min(posRef.current, data.bars.length));
-      const maxShift = processed - 1 - Math.max(d.idxA, d.idxB);
-      const minShift = -Math.min(d.idxA, d.idxB);
-      if (maxShift < minShift) return;
-      shift = Math.max(minShift, Math.min(maxShift, shift));
-      const timeA = data.bars[d.idxA + shift].ts;
-      const timeB = data.bars[d.idxB + shift].ts;
-      const { fib } = d;
+      if (processed === 0) return;
+      let shift = Math.round((e.clientX - d.startX) / barSpacing);
+      if (d.mode === "move") {
+        const minShift = -Math.min(d.idxA, d.idxB);
+        const maxShift = processed - 1 - Math.max(d.idxA, d.idxB);
+        if (maxShift < minShift) return;
+        shift = Math.max(minShift, Math.min(maxShift, shift));
+      } else if (d.mode === "anchorA") {
+        shift = Math.max(-d.idxA, Math.min(processed - 1 - d.idxA, shift));
+      } else {
+        shift = Math.max(-d.idxB, Math.min(processed - 1 - d.idxB, shift));
+      }
       d.moved = true;
-      setFibs((fs) =>
-        fs.map((f) =>
-          f.id === fib.id
-            ? {
-                ...f,
-                a: { time: timeA, price: Math.max(0.00001, fib.a.price + priceDelta) },
-                b: { time: timeB, price: Math.max(0.00001, fib.b.price + priceDelta) },
-              }
-            : f,
-        ),
-      );
+      const clampPrice = (x: number) => Math.max(0.00001, x);
+      const { fib } = d;
+      if (d.mode === "anchorA") {
+        updateFib({
+          ...fib,
+          a: { time: data.bars[d.idxA + shift].ts, price: clampPrice(fib.a.price + priceDelta) },
+        });
+      } else if (d.mode === "anchorB") {
+        updateFib({
+          ...fib,
+          b: { time: data.bars[d.idxB + shift].ts, price: clampPrice(fib.b.price + priceDelta) },
+        });
+      } else {
+        updateFib({
+          ...fib,
+          a: { time: data.bars[d.idxA + shift].ts, price: clampPrice(fib.a.price + priceDelta) },
+          b: { time: data.bars[d.idxB + shift].ts, price: clampPrice(fib.b.price + priceDelta) },
+        });
+      }
     };
 
     const onUp = (e: MouseEvent) => {
@@ -435,8 +488,8 @@ export function Chart() {
       const heldMs = performance.now() - down.t;
       down = null;
       if (movedPx > 6 || heldMs > 600) return;
-      const mode = fibModeRef.current;
-      if (!mode) return;
+      const tool = fibToolRef.current;
+      if (!tool) return;
       const chart = chartRef.current;
       const series = candleRef.current;
       if (!chart || !series) return;
@@ -457,19 +510,21 @@ export function Chart() {
       }
       if (timeNum == null) return;
       const point: FibAnchor = { time: timeNum, price };
-      if (mode === "first") {
-        setAnchor(point);
-        setFibMode("second");
+      const start = fibAnchorRef.current;
+      if (!start) {
+        setFibAnchor(point);
         return;
       }
-      const a = anchorRef.current;
-      if (!a) return;
-      setFibs((fs) => [
-        ...fs,
-        { id: fibSeq.current++, a, b: point, color: DEFAULT_FIB_COLOR, levels: defaultFibLevels() },
-      ]);
-      setAnchor(null);
-      setFibMode(null);
+      const kind = tool === "extension" ? "extension" : "retracement";
+      addFib({
+        id: fibSeq.current++,
+        a: start,
+        b: point,
+        color: FIB_COLOR_BY_KIND[kind],
+        levels: fibLevelsFor(kind),
+      });
+      setFibAnchor(null);
+      setFibTool(null);
     };
 
     const onContext = (e: MouseEvent) => {
@@ -477,11 +532,11 @@ export function Chart() {
       const series = candleRef.current;
       if (!chart || !series) return;
       const p = local(e);
-      const fib = hitTestFib(chart, series, fibsRef.current, p.x, p.y);
-      if (!fib) return;
+      const hit = hitTestFib(chart, series, fibsRef.current, p.x, p.y);
+      if (!hit) return;
       e.preventDefault();
       e.stopPropagation();
-      setMenu({ fibId: fib.id, x: e.clientX, y: e.clientY });
+      setMenu({ fibId: hit.fib.id, levelRatio: hit.levelRatio, x: e.clientX, y: e.clientY });
     };
 
     el.addEventListener("mousedown", onDown, true);
@@ -494,7 +549,7 @@ export function Chart() {
       window.removeEventListener("mousemove", onMove, true);
       window.removeEventListener("mouseup", onUp, true);
     };
-  }, []);
+  }, [addFib, setFibAnchor, setFibTool, updateFib]);
 
   // Escape closes the editor / cancels a drawing in progress.
   useEffect(() => {
@@ -502,14 +557,14 @@ export function Chart() {
       if (e.key !== "Escape") return;
       if (menu) return setMenu(null);
       if (editorFib != null) return setEditorFib(null);
-      if (fibMode) {
-        setFibMode(null);
-        setAnchor(null);
+      if (fibTool) {
+        setFibTool(null);
+        setFibAnchor(null);
       }
     };
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
-  }, [menu, editorFib, fibMode]);
+  }, [menu, editorFib, fibTool, setFibTool, setFibAnchor]);
 
   // Candles, volume, markers, order/position lines.
   useEffect(() => {
@@ -626,25 +681,23 @@ export function Chart() {
   const spreadPips = lastBar && spec ? (lastBar.ask.c - lastBar.bid.c) / spec.pipSize : null;
   const change = lastBar && pos >= 2 && loaded ? lastBar.bid.c - loaded.bars[pos - 2].bid.c : null;
 
-  const startFib = () => {
-    if (!loaded) return;
-    if (fibMode) {
-      setFibMode(null);
-      setAnchor(null);
-      return;
-    }
-    setAnchor(null);
-    setFibMode("first");
-  };
-
-  const clearFibs = () => {
-    setFibs([]);
-    setFibMode(null);
-    setAnchor(null);
-    setEditorFib(null);
-  };
-
   const editorTarget = editorFib != null ? fibs.find((f) => f.id === editorFib) ?? null : null;
+
+  const menuItems: MenuItem[] = [];
+  if (menu) {
+    const fib = fibs.find((f) => f.id === menu.fibId);
+    if (fib && menu.levelRatio != null) {
+      const lvl = fib.levels.find((l) => Math.abs(l.ratio - menu.levelRatio!) < 1e-9);
+      if (lvl) {
+        menuItems.push({
+          label: `${lvl.enabled ? "Hide" : "Show"} ${ratioLabel(lvl.ratio)} level`,
+          onClick: () => updateFib({ ...fib, levels: toggleLevel(fib.levels, lvl.ratio) }),
+        });
+      }
+    }
+    menuItems.push({ label: "Edit levels & colour…", onClick: () => setEditorFib(menu.fibId) });
+    menuItems.push({ label: "Remove Fibonacci", danger: true, onClick: () => removeFib(menu.fibId) });
+  }
 
   return (
     <div className="chart-wrap">
@@ -661,23 +714,6 @@ export function Chart() {
           <span className="hud-time">{fmtTime(lastBar.ts)} UTC</span>
         </div>
       ) : null}
-
-      <div className="chart-tools">
-        <button
-          className={`tool-btn ${fibMode ? "active" : ""}`}
-          onClick={startFib}
-          disabled={!loaded || pos === 0}
-          title="Click two swing points to draw Fibonacci; drag the line to move it; right-click the diagonal to edit levels and colour (Esc cancels)"
-        >
-          {fibMode ? "✕ Fib" : "Fibonacci"}
-        </button>
-        <button className="tool-btn" onClick={clearFibs} disabled={fibs.length === 0} title="Remove all fib drawings">
-          Clear
-        </button>
-        {fibs.length > 0 ? <span className="tool-chip">{fibs.length} fib</span> : null}
-        {fibMode === "first" ? <span className="tool-hint">click swing point 1</span> : null}
-        {fibMode === "second" ? <span className="tool-hint">click swing point 2</span> : null}
-      </div>
 
       <div ref={containerRef} className="chart-canvas" />
       <canvas ref={overlayRef} className="chart-overlay" />
@@ -699,25 +735,15 @@ export function Chart() {
         </div>
       ) : null}
 
-      {menu ? (
-        <ContextMenu
-          x={menu.x}
-          y={menu.y}
-          items={[
-            { label: "Edit levels & colour…", onClick: () => setEditorFib(menu.fibId) },
-            { label: "Remove Fibonacci", danger: true, onClick: () => setFibs((fs) => fs.filter((f) => f.id !== menu.fibId)) },
-          ]}
-          onClose={() => setMenu(null)}
-        />
-      ) : null}
+      {menu ? <ContextMenu x={menu.x} y={menu.y} items={menuItems} onClose={() => setMenu(null)} /> : null}
 
       {editorTarget ? (
         <FibEditor
           fib={editorTarget}
           digits={spec?.digits ?? 5}
-          onChange={(updated) => setFibs((fs) => fs.map((f) => (f.id === updated.id ? updated : f)))}
+          onChange={(updated) => updateFib(updated)}
           onClose={() => setEditorFib(null)}
-          onRemove={() => setFibs((fs) => fs.filter((f) => f.id !== editorTarget.id))}
+          onRemove={() => removeFib(editorTarget.id)}
         />
       ) : null}
     </div>

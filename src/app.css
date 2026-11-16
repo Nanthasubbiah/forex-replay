@@ -906,41 +906,6 @@ select:focus {
 
 /* --------------------------------------------------------- drawing tools */
 
-.chart-tools {
-  position: absolute;
-  top: 8px;
-  right: 10px;
-  z-index: 6;
-  display: flex;
-  align-items: center;
-  gap: 6px;
-}
-
-.tool-btn {
-  background: rgba(20, 33, 44, 0.92);
-  border: 1px solid var(--border);
-  color: var(--text);
-  border-radius: 7px;
-  padding: 5px 10px;
-  font-size: 11px;
-  cursor: pointer;
-}
-
-.tool-btn:hover {
-  border-color: #2c3c4d;
-}
-
-.tool-btn.active {
-  border-color: var(--teal);
-  color: var(--teal);
-  background: rgba(13, 31, 28, 0.92);
-}
-
-.tool-btn:disabled {
-  opacity: 0.35;
-  cursor: not-allowed;
-}
-
 .tool-chip {
   font-size: 10px;
   color: var(--teal);
@@ -1156,4 +1121,117 @@ select:focus {
 
 .secondary-btn.danger:hover {
   border-color: #7f3a3a;
+}
+
+
+/* ------------------------------------------------------------- toolbar */
+
+.toolbar {
+  height: 36px;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 0 10px;
+  border-bottom: 1px solid var(--border);
+  background: #0d151d;
+  flex-shrink: 0;
+  position: relative;
+  z-index: 8;
+}
+
+.tb-group {
+  position: relative;
+}
+
+.toolbar-tab {
+  background: transparent;
+  border: 1px solid transparent;
+  color: var(--muted);
+  padding: 5px 10px;
+  border-radius: 7px;
+  font-size: 12px;
+  cursor: pointer;
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.toolbar-tab:hover {
+  color: var(--text);
+  background: #14212c;
+}
+
+.toolbar-tab.active {
+  color: var(--teal);
+  border-color: #1d3a35;
+  background: #0d1f1c;
+}
+
+.toolbar-tab:disabled {
+  opacity: 0.35;
+  cursor: not-allowed;
+}
+
+.tb-caret {
+  font-size: 9px;
+  opacity: 0.8;
+}
+
+.toolbar-menu {
+  position: absolute;
+  top: calc(100% + 4px);
+  left: 0;
+  min-width: 260px;
+  background: #111a22;
+  border: 1px solid #2a3a49;
+  border-radius: 9px;
+  padding: 4px;
+  box-shadow: 0 14px 36px rgba(0, 0, 0, 0.5);
+  display: flex;
+  flex-direction: column;
+  z-index: 60;
+}
+
+.toolbar-item {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  text-align: left;
+  background: none;
+  border: none;
+  color: var(--text);
+  padding: 8px 10px;
+  border-radius: 7px;
+  cursor: pointer;
+}
+
+.toolbar-item:hover {
+  background: #18242f;
+}
+
+.toolbar-item.active {
+  background: #0d1f1c;
+}
+
+.toolbar-item b {
+  font-size: 12px;
+  font-weight: 600;
+}
+
+.toolbar-item small {
+  font-size: 10.5px;
+  color: var(--muted);
+}
+
+.tb-spacer {
+  flex: 1;
+}
+
+.tb-help {
+  font-size: 10.5px;
+  color: var(--muted);
+  font-family: var(--mono);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
 }

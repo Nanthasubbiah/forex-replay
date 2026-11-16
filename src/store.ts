@@ -6,6 +6,7 @@ import { generateDemoBars } from "./data/demo";
 import { parseDataFile } from "./data/parse";
 import { SmaCrossStrategy } from "./strategy/builtin";
 import { getSymbolSpec } from "./engine/symbols";
+import type { FibAnchor, FibDrawing, FibToolKind } from "./lib/fib";
 
 export interface AccountSettings {
   initialBalance: number;
@@ -49,6 +50,9 @@ interface State {
   version: number;
   strategyKind: StrategyKind | null;
   toast: Toast | null;
+  fibs: FibDrawing[];
+  fibTool: FibToolKind | null;
+  fibAnchor: FibAnchor | null;
 
   loadDemo: () => void;
   loadFile: (file: File) => Promise<void>;
@@ -70,6 +74,13 @@ interface State {
   modifyPosition: (ticket: number, sl: number | null, tp: number | null) => boolean;
   modifyPending: (ticket: number, patch: { price?: number | null; sl?: number | null; tp?: number | null }) => boolean;
   setToast: (toast: Toast | null) => void;
+
+  setFibTool: (tool: FibToolKind | null) => void;
+  setFibAnchor: (anchor: FibAnchor | null) => void;
+  addFib: (fib: FibDrawing) => void;
+  updateFib: (updated: FibDrawing) => void;
+  removeFib: (id: number) => void;
+  clearFibs: () => void;
 }
 
 let timer: ReturnType<typeof setInterval> | null = null;
@@ -110,6 +121,9 @@ export const useStore = create<State>((set, get) => ({
   version: 0,
   strategyKind: null,
   toast: null,
+  fibs: [],
+  fibTool: null,
+  fibAnchor: null,
 
   loadDemo: () => {
     const bars = generateDemoBars({ symbol: "EURUSD", count: 6000, tfMinutes: 5 });
@@ -141,6 +155,9 @@ export const useStore = create<State>((set, get) => ({
       pos: 0,
       running: false,
       strategyKind: null,
+      fibs: [],
+      fibTool: null,
+      fibAnchor: null,
       version: get().version + 1,
       toast: null,
     });
@@ -324,4 +341,11 @@ export const useStore = create<State>((set, get) => ({
   },
 
   setToast: (toast) => set({ toast }),
+
+  setFibTool: (fibTool) => set({ fibTool, fibAnchor: fibTool === null ? null : get().fibAnchor }),
+  setFibAnchor: (fibAnchor) => set({ fibAnchor }),
+  addFib: (fib) => set({ fibs: [...get().fibs, fib] }),
+  updateFib: (updated) => set({ fibs: get().fibs.map((f) => (f.id === updated.id ? updated : f)) }),
+  removeFib: (id) => set({ fibs: get().fibs.filter((f) => f.id !== id) }),
+  clearFibs: () => set({ fibs: [], fibTool: null, fibAnchor: null }),
 }));

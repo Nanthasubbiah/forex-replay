@@ -61,8 +61,25 @@ export interface FibDrawing {
 export const DEFAULT_FIB_COLOR = "#22d3ee";
 export const FIB_COLOR_PRESETS = ["#22d3ee", "#f59e0b", "#a78bfa", "#34d399", "#f87171", "#e5e7eb"];
 
+/** Extension projection ratios drawn on top of the retracement set. */
+export const EXTENSION_RATIOS = [1.272, 1.618] as const;
+
+export type FibToolKind = "retracement" | "extension";
+
+export const FIB_COLOR_BY_KIND: Record<FibToolKind, string> = {
+  retracement: DEFAULT_FIB_COLOR,
+  extension: "#a78bfa",
+};
+
+/** Default level set for a freshly drawn tool of the given kind. */
+export function fibLevelsFor(kind: FibToolKind): FibLevelState[] {
+  const ratios: number[] = [...RETRACEMENT_RATIOS];
+  if (kind === "extension") ratios.push(...EXTENSION_RATIOS);
+  return ratios.map((ratio) => ({ ratio, enabled: true }));
+}
+
 export function defaultFibLevels(): FibLevelState[] {
-  return RETRACEMENT_RATIOS.map((ratio) => ({ ratio, enabled: true }));
+  return fibLevelsFor("retracement");
 }
 
 export function toggleLevel(levels: FibLevelState[], ratio: number): FibLevelState[] {
