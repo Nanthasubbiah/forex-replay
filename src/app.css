@@ -103,6 +103,42 @@ button {
   padding: 4px 8px;
 }
 
+.symbol-field {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  border: 1px solid var(--border);
+  background: #0e1720;
+  border-radius: 6px;
+  padding: 4px 8px;
+  cursor: text;
+}
+
+.symbol-field:focus-within {
+  border-color: #2f5468;
+  box-shadow: 0 0 0 2px rgba(47, 84, 104, 0.25);
+}
+
+.symbol-field > span {
+  font-size: 10px;
+  text-transform: uppercase;
+  letter-spacing: 0.6px;
+  color: var(--muted);
+}
+
+.symbol-field input {
+  width: 88px;
+  border: none;
+  outline: none;
+  background: transparent;
+  color: var(--text);
+  font-family: var(--mono);
+  font-size: 12px;
+  font-weight: 600;
+  letter-spacing: 0.4px;
+  padding: 0;
+}
+
 .file-btn {
   display: inline-flex;
   align-items: center;
@@ -147,6 +183,12 @@ button {
   inset: 0;
 }
 
+/* Crosshair ruler mode: the plot area gets the MT4 crosshair pointer. */
+.chart-canvas.crosshair-on,
+.chart-canvas.crosshair-on canvas {
+  cursor: crosshair;
+}
+
 .chart-hud {
   position: absolute;
   top: 8px;
@@ -186,6 +228,44 @@ button {
 .hud-meta,
 .hud-time {
   color: var(--muted);
+}
+
+/* OHLCV of the bar under the pointer — MT4's "data window" at chart bottom. */
+.chart-data-strip {
+  position: absolute;
+  left: 12px;
+  bottom: 34px;
+  z-index: 5;
+  display: flex;
+  align-items: baseline;
+  gap: 9px;
+  background: rgba(11, 17, 23, 0.86);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  padding: 4px 9px;
+  font-family: var(--mono);
+  font-size: 10.5px;
+  color: var(--muted);
+  pointer-events: none;
+  white-space: nowrap;
+}
+
+.chart-data-strip b {
+  color: var(--text);
+  font-weight: 500;
+}
+
+.chart-data-strip .data-stamp {
+  color: var(--teal);
+  font-weight: 600;
+}
+
+.chart-data-strip .pos {
+  color: var(--green);
+}
+
+.chart-data-strip .neg {
+  color: var(--red);
 }
 
 .chart-empty {
@@ -1114,6 +1194,64 @@ select:focus {
   color: #f08a8a;
 }
 
+/* ------------------------------------------------------- indicators */
+
+.ma-editor {
+  width: 390px;
+}
+
+.ma-toggle {
+  flex-direction: row !important;
+  align-items: flex-start;
+  gap: 8px !important;
+  color: var(--text);
+  cursor: pointer;
+}
+
+.ma-toggle input[type="checkbox"] {
+  width: auto;
+  margin: 2px 0 0;
+  flex-shrink: 0;
+}
+
+.ma-two-colors {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 8px;
+}
+
+.ma-two-colors input[type="color"] {
+  width: 100%;
+  height: 28px;
+  padding: 2px;
+  background: #0a1118;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+}
+
+.ma-dot {
+  display: inline-block;
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  margin-right: 6px;
+  vertical-align: middle;
+}
+
+.toolbar-section {
+  padding: 8px 10px 4px;
+  font-size: 10px;
+  font-weight: 600;
+  letter-spacing: 0.8px;
+  text-transform: uppercase;
+  color: var(--muted);
+}
+
+.toolbar-item.danger-item b {
+  color: #f08a8a;
+  font-weight: 500;
+}
+
 .secondary-btn.danger {
   color: #f08a8a;
   border-color: #5c2a2a;
@@ -1182,6 +1320,8 @@ select:focus {
   top: calc(100% + 4px);
   left: 0;
   min-width: 260px;
+  max-height: 70vh;
+  overflow-y: auto;
   background: #111a22;
   border: 1px solid #2a3a49;
   border-radius: 9px;

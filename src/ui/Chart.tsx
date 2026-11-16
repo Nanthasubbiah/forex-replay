@@ -3,6 +3,7 @@ import {
   CandlestickSeries,
   CrosshairMode,
   HistogramSeries,
+  LineSeries,
   LineStyle,
   createChart,
   createSeriesMarkers,
@@ -11,6 +12,7 @@ import {
   type ISeriesApi,
   type ISeriesMarkersPluginApi,
   type SeriesMarker,
+  type SeriesType,
   type Time,
   type UTCTimestamp,
 } from "lightweight-charts";
@@ -20,19 +22,37 @@ import type { Simulator } from "../engine/simulator";
 import type { Bar, PendingType } from "../engine/types";
 import { getSymbolSpec } from "../engine/symbols";
 import {
-  distToSegment,
   FIB_COLOR_BY_KIND,
   fibLevelsFor,
-  fibPrice,
   ratioLabel,
   toggleLevel,
   type FibAnchor,
   type FibDrawing,
+  type FibToolKind,
 } from "../lib/fib";
-import { hexToRgba } from "../lib/color";
+import { createIndicatorValuesCache, ensureIndicatorValues, type IndicatorValuesCache } from "../lib/indicators";
+import {
+  indicatorDef,
+  indicatorOutputs,
+  indicatorSignature,
+  type IndicatorInstance,
+  type IndicatorOutput,
+} from "../lib/indicatorRegistry";
+import type { MeasurePoint } from "../lib/measure";
+import { SHAPE_COLOR_BY_KIND, type DrawingShape, type ShapePoint, type ShapeToolKind } from "../lib/shapes";
+import {
+  drawOverlay,
+  hitTestFib,
+  hitTestFibAnchor,
+  hitTestIndicator,
+  hitTestShape,
+  type HoverPoint,
+} from "./chartDrawings";
 import { FibEditor } from "./FibEditor";
+import { IndicatorEditor } from "./IndicatorEditor";
+import { ShapeEditor } from "./ShapeEditor";
 import { ContextMenu, type MenuItem } from "./ContextMenu";
-import { fmtPrice, fmtTime } from "../lib/format";
+import { fmtPrice, fmtSigned, fmtTime } from "../lib/format";
 
 type MarkersApi = ISeriesMarkersPluginApi<Time>;
 
@@ -43,20 +63,8 @@ const PENDING_LABELS: Record<PendingType, string> = {
   sell_stop: "SELL STOP",
 };
 
-interface FibGeometry {
-  xA: number;
-  xB: number;
-  yA: number;
-  yB: number;
-}
-
-interface FibHit {
-  fib: FibDrawing;
-  /** Set when the pointer is over a horizontal level segment. */
-  levelRatio?: number;
-}
-
-interface DragState {
+interface FibDragState {
+  kind: "fib";
   mode: "move" | "anchorA" | "anchorB";
   fib: FibDrawing;
   idxA: number;
@@ -64,6 +72,46 @@ interface DragState {
   startX: number;
   startY: number;
   moved: boolean;
+}
+
+interface ShapeDragState {
+  kind: "shape";
+  mode: "move" | "anchorA" | "anchorB";
+  shape: DrawingShape;
+  idxA: number;
+  idxB: number;
+  startX: number;
+  startY: number;
+  moved: boolean;
+}
+
+/** Dragging an SL/TP price line of a live position or a pending order. */
+interface StopsDragState {
+  kind: "stops";
+  scope: "position" | "pending";
+  ticket: number;
+  field: "sl" | "tp";
+  /** Latest (already clamped) price under the pointer. */
+  price: number;
+  startX: number;
+  startY: number;
+  moved: boolean;
+}
+
+type DragState = FibDragState | ShapeDragState | StopsDragState;
+
+/** One oscillator indicator rendered as native series in its own pane. */
+interface PaneSeriesRuntime {
+  id: number;
+  outputs: {
+    output: IndicatorOutput;
+    series: ISeriesApi<SeriesType>;
+    push: (time: UTCTimestamp, value: number) => void;
+  }[];
+  levels: { series: ISeriesApi<SeriesType>; line: IPriceLine }[];
+  /** Bars already fed to the series (the replay can rewind). */
+  pushed: number;
+  barsRef: Bar[];
 }
 
 function buildMarkers(sim: Simulator): SeriesMarker<Time>[] {
@@ -85,69 +133,6 @@ function buildMarkers(sim: Simulator): SeriesMarker<Time>[] {
   return out.sort((a, b) => Number(a.time) - Number(b.time));
 }
 
-function fibGeometry(
-  chart: IChartApi,
-  series: ISeriesApi<"Candlestick">,
-  fib: FibDrawing,
-): FibGeometry | null {
-  const xA = chart.timeScale().timeToCoordinate(fib.a.time as UTCTimestamp);
-  const xB = chart.timeScale().timeToCoordinate(fib.b.time as UTCTimestamp);
-  const yA = series.priceToCoordinate(fib.a.price);
-  const yB = series.priceToCoordinate(fib.b.price);
-  if (xA == null || xB == null || yA == null || yB == null) return null;
-  return { xA, xB, yA, yB };
-}
-
-function hitTestFib(
-  chart: IChartApi,
-  series: ISeriesApi<"Candlestick">,
-  fibs: FibDrawing[],
-  x: number,
-  y: number,
-): FibHit | null {
-  const halfBar = Math.max(6, chart.timeScale().options().barSpacing / 2);
-  const diagTolerance = Math.max(9, halfBar);
-  const anchorTolerance = Math.max(10, halfBar + 2);
-  for (let i = fibs.length - 1; i >= 0; i--) {
-    const fib = fibs[i];
-    const g = fibGeometry(chart, series, fib);
-    if (!g) continue;
-    const left = Math.min(g.xA, g.xB);
-    const right = Math.max(g.xA, g.xB);
-    if (x >= left - 3 && x <= right + 3) {
-      for (const lvl of fib.levels) {
-        if (!lvl.enabled) continue;
-        const ly = series.priceToCoordinate(fibPrice(fib.a.price, fib.b.price, lvl.ratio));
-        if (ly != null && Math.abs(y - ly) <= 5) return { fib, levelRatio: lvl.ratio };
-      }
-    }
-    if (distToSegment(x, y, g.xA, g.yA, g.xB, g.yB) <= diagTolerance) return { fib };
-    if (Math.hypot(x - g.xA, y - g.yA) <= anchorTolerance || Math.hypot(x - g.xB, y - g.yB) <= anchorTolerance) {
-      return { fib };
-    }
-  }
-  return null;
-}
-
-function hitAnchorHandle(
-  chart: IChartApi,
-  series: ISeriesApi<"Candlestick">,
-  fibs: FibDrawing[],
-  x: number,
-  y: number,
-): { fib: FibDrawing; side: "a" | "b" } | null {
-  const halfBar = Math.max(6, chart.timeScale().options().barSpacing / 2);
-  const tol = Math.max(10, halfBar + 2);
-  for (let i = fibs.length - 1; i >= 0; i--) {
-    const fib = fibs[i];
-    const g = fibGeometry(chart, series, fib);
-    if (!g) continue;
-    if (Math.hypot(x - g.xA, y - g.yA) <= tol) return { fib, side: "a" };
-    if (Math.hypot(x - g.xB, y - g.yB) <= tol) return { fib, side: "b" };
-  }
-  return null;
-}
-
 function findBarIndex(bars: Bar[], ts: number): number {
   if (bars.length === 0) return 0;
   let lo = 0;
@@ -160,113 +145,69 @@ function findBarIndex(bars: Bar[], ts: number): number {
   return lo;
 }
 
-function drawFib(
-  ctx: CanvasRenderingContext2D,
-  series: ISeriesApi<"Candlestick">,
-  fib: FibDrawing,
-  g: FibGeometry,
-  digits: number,
-): void {
-  const { xA, xB, yA, yB } = g;
-  const left = Math.min(xA, xB);
-  const right = Math.max(xA, xB);
-  ctx.save();
-
-  // Diagonal connecting the two swing points.
-  ctx.strokeStyle = hexToRgba(fib.color, 0.85);
-  ctx.lineWidth = 1;
-  ctx.setLineDash([2, 4]);
-  ctx.beginPath();
-  ctx.moveTo(xA, yA);
-  ctx.lineTo(xB, yB);
-  ctx.stroke();
-
-  // Horizontal levels, spanning only between the two clicked points.
-  ctx.setLineDash([4, 4]);
-  for (const lvl of fib.levels) {
-    if (!lvl.enabled) continue;
-    const price = fibPrice(fib.a.price, fib.b.price, lvl.ratio);
-    const y = series.priceToCoordinate(price);
-    if (y == null) continue;
-    const golden = Math.abs(lvl.ratio - 0.618) < 1e-9;
-    ctx.strokeStyle = hexToRgba(fib.color, golden ? 0.95 : 0.8);
-    ctx.lineWidth = golden ? 1.6 : 1;
-    ctx.beginPath();
-    ctx.moveTo(left, y);
-    ctx.lineTo(right, y);
-    ctx.stroke();
-
-    ctx.setLineDash([]);
-    ctx.fillStyle = fib.color;
-    ctx.font = "10px ui-monospace, SFMono-Regular, Menlo, Consolas, monospace";
-    ctx.textAlign = "right";
-    ctx.textBaseline = "bottom";
-    ctx.fillText(`${ratioLabel(lvl.ratio)} ${price.toFixed(digits)}`, right - 3, y - 2);
-    ctx.setLineDash([4, 4]);
-  }
-
-  // Anchor handles.
-  ctx.setLineDash([]);
-  ctx.fillStyle = fib.color;
-  for (const [x, y] of [
-    [xA, yA],
-    [xB, yB],
-  ] as const) {
-    ctx.beginPath();
-    ctx.arc(x, y, 3, 0, Math.PI * 2);
-    ctx.fill();
-  }
-  ctx.restore();
+interface StopLineHit {
+  scope: "position" | "pending";
+  ticket: number;
+  field: "sl" | "tp";
+  price: number;
 }
 
-function drawOverlay(
-  canvas: HTMLCanvasElement,
-  chart: IChartApi | null,
-  series: ISeriesApi<"Candlestick"> | null,
-  data: LoadedData | null,
-  fibs: FibDrawing[],
-  anchor: FibAnchor | null,
-  toolColor: string,
-): void {
-  const w = canvas.clientWidth;
-  const h = canvas.clientHeight;
-  if (w === 0 || h === 0) return;
-  const dpr = window.devicePixelRatio || 1;
-  const cw = Math.max(1, Math.round(w * dpr));
-  const ch = Math.max(1, Math.round(h * dpr));
-  if (canvas.width !== cw) canvas.width = cw;
-  if (canvas.height !== ch) canvas.height = ch;
-  const ctx = canvas.getContext("2d");
-  if (!ctx) return;
-  ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
-  ctx.clearRect(0, 0, w, h);
-  if (!chart || !series || !data) return;
-
-  const digits = getSymbolSpec(data.symbol).digits;
-  for (const fib of fibs) {
-    const g = fibGeometry(chart, series, fib);
-    if (g) drawFib(ctx, series, fib, g, digits);
-  }
-
-  if (anchor != null) {
-    const y = series.priceToCoordinate(anchor.price);
-    if (y != null) {
-      ctx.save();
-      ctx.strokeStyle = hexToRgba(toolColor, 0.9);
-      ctx.setLineDash([4, 4]);
-      ctx.beginPath();
-      ctx.moveTo(0, y);
-      ctx.lineTo(w, y);
-      ctx.stroke();
-      ctx.setLineDash([]);
-      ctx.fillStyle = toolColor;
-      ctx.font = "10px ui-monospace, SFMono-Regular, Menlo, Consolas, monospace";
-      ctx.textAlign = "left";
-      ctx.textBaseline = "bottom";
-      ctx.fillText(`0% ${anchor.price.toFixed(digits)} — click swing point 2`, 8, y - 2);
-      ctx.restore();
+/** Nearest SL/TP price line under the pointer (regardless of the x, like MT4). */
+function hitStopLine(
+  chart: IChartApi,
+  series: ISeriesApi<"Candlestick">,
+  sim: Simulator,
+  x: number,
+  y: number,
+): StopLineHit | null {
+  const pane = chart.paneSize();
+  if (x < 0 || y < 0 || x > pane.width || y > pane.height) return null;
+  let best: StopLineHit | null = null;
+  let bestDy = 6;
+  const consider = (scope: StopLineHit["scope"], ticket: number, field: StopLineHit["field"], price: number | null) => {
+    if (price == null) return;
+    const py = series.priceToCoordinate(price);
+    if (py == null) return;
+    const dy = Math.abs(y - py);
+    if (dy <= bestDy) {
+      bestDy = dy;
+      best = { scope, ticket, field, price };
     }
+  };
+  for (const p of sim.positions) {
+    consider("position", p.ticket, "sl", p.sl);
+    consider("position", p.ticket, "tp", p.tp);
   }
+  for (const o of sim.pendings) {
+    consider("pending", o.ticket, "sl", o.sl);
+    consider("pending", o.ticket, "tp", o.tp);
+  }
+  return best;
+}
+
+/**
+ * Keeps a dragged SL/TP on the valid side of the entry/trigger price, using
+ * the same side rules the simulator enforces (buy: SL below, TP above).
+ */
+function clampStopsPrice(
+  sim: Simulator,
+  scope: StopLineHit["scope"],
+  ticket: number,
+  field: StopLineHit["field"],
+  price: number,
+): number {
+  const tick = Math.pow(10, -sim.spec.digits);
+  if (scope === "position") {
+    const pos = sim.positions.find((p) => p.ticket === ticket);
+    if (!pos) return price;
+    const below = field === "sl" ? pos.side === "buy" : pos.side === "sell";
+    return below ? Math.max(tick, Math.min(price, pos.openPrice - tick)) : Math.max(price, pos.openPrice + tick);
+  }
+  const order = sim.pendings.find((o) => o.ticket === ticket);
+  if (!order) return price;
+  const isBuy = order.type === "buy_limit" || order.type === "buy_stop";
+  const below = field === "sl" ? isBuy : !isBuy;
+  return below ? Math.max(tick, Math.min(price, order.price - tick)) : Math.max(price, order.price + tick);
 }
 
 export function Chart() {
@@ -282,13 +223,34 @@ export function Chart() {
   const markCountRef = useRef(-1);
 
   const [editorFib, setEditorFib] = useState<number | null>(null);
+  const [editorShape, setEditorShape] = useState<number | null>(null);
   const [menu, setMenu] = useState<{ fibId: number; levelRatio?: number; x: number; y: number } | null>(null);
+  const [shapeMenu, setShapeMenu] = useState<{ shapeId: number; x: number; y: number } | null>(null);
+  /** Bar index under the pointer — drives the OHLCV strip at the chart bottom. */
+  const [hoverBar, setHoverBar] = useState<number | null>(null);
+
   const fibSeq = useRef(1);
-  const fibToolRef = useRef<string | null>(null);
+  const shapeSeq = useRef(1);
+  const fibToolRef = useRef<FibToolKind | null>(null);
   const fibAnchorRef = useRef<FibAnchor | null>(null);
   const fibsRef = useRef<FibDrawing[]>([]);
+  const shapesRef = useRef<DrawingShape[]>([]);
+  const shapeToolRef = useRef<ShapeToolKind | null>(null);
+  const shapeAnchorRef = useRef<ShapePoint | null>(null);
+  const indicatorRef = useRef<IndicatorInstance[]>([]);
+  const indicatorCachesRef = useRef<Map<number, IndicatorValuesCache>>(new Map());
+  const paneRuntimesRef = useRef<PaneSeriesRuntime[]>([]);
+  const paneSigRef = useRef<string>("");
+  const hoverRef = useRef<HoverPoint | null>(null);
   const dragRef = useRef<DragState | null>(null);
   const posRef = useRef(0);
+  const crosshairRef = useRef(false);
+  const measureRef = useRef<{ a: MeasurePoint | null; b: MeasurePoint | null; preview: MeasurePoint | null }>({
+    a: null,
+    b: null,
+    preview: null,
+  });
+  const hoverBarRef = useRef<number | null>(null);
 
   const loaded = useStore((s) => s.loaded);
   const pos = useStore((s) => s.pos);
@@ -304,6 +266,25 @@ export function Chart() {
   const updateFib = useStore((s) => s.updateFib);
   const removeFib = useStore((s) => s.removeFib);
 
+  const shapes = useStore((s) => s.shapes);
+  const shapeTool = useStore((s) => s.shapeTool);
+  const shapeAnchor = useStore((s) => s.shapeAnchor);
+  const setShapeTool = useStore((s) => s.setShapeTool);
+  const setShapeAnchor = useStore((s) => s.setShapeAnchor);
+  const addShape = useStore((s) => s.addShape);
+  const updateShape = useStore((s) => s.updateShape);
+  const removeShape = useStore((s) => s.removeShape);
+
+  const indicators = useStore((s) => s.indicators);
+  const indicatorEditorId = useStore((s) => s.indicatorEditorId);
+  const updateIndicator = useStore((s) => s.updateIndicator);
+  const removeIndicator = useStore((s) => s.removeIndicator);
+  const openIndicatorEditor = useStore((s) => s.openIndicatorEditor);
+
+  const crosshair = useStore((s) => s.crosshair);
+  const setCrosshair = useStore((s) => s.setCrosshair);
+  const showVolume = useStore((s) => s.showVolume);
+
   useEffect(() => {
     fibToolRef.current = fibTool;
   }, [fibTool]);
@@ -314,8 +295,34 @@ export function Chart() {
     fibsRef.current = fibs;
   }, [fibs]);
   useEffect(() => {
+    shapesRef.current = shapes;
+  }, [shapes]);
+  useEffect(() => {
+    shapeToolRef.current = shapeTool;
+  }, [shapeTool]);
+  useEffect(() => {
+    shapeAnchorRef.current = shapeAnchor;
+  }, [shapeAnchor]);
+  useEffect(() => {
+    indicatorRef.current = indicators;
+    const ids = new Set(indicators.map((inst) => inst.id));
+    for (const id of indicatorCachesRef.current.keys()) {
+      if (!ids.has(id)) indicatorCachesRef.current.delete(id);
+    }
+  }, [indicators]);
+  useEffect(() => {
     posRef.current = pos;
   }, [pos]);
+
+  useEffect(() => {
+    crosshairRef.current = crosshair;
+    if (!crosshair) measureRef.current = { a: null, b: null, preview: null };
+  }, [crosshair]);
+
+  // A fresh dataset invalidates the measured bar indices.
+  useEffect(() => {
+    measureRef.current = { a: null, b: null, preview: null };
+  }, [loaded]);
 
   useEffect(() => {
     const el = containerRef.current;
@@ -357,12 +364,48 @@ export function Chart() {
     };
   }, []);
 
+  // Volume histogram visibility is a chart preference, not replay state.
+  useEffect(() => {
+    volRef.current?.applyOptions({ visible: showVolume });
+  }, [showVolume]);
+
   // Dev-only inspection hook used by the headless smoke tests.
   useEffect(() => {
     if (!import.meta.env.DEV) return;
     (window as unknown as { __chartTest?: unknown }).__chartTest = {
       toX: (t: number) => chartRef.current?.timeScale().timeToCoordinate(t as UTCTimestamp) ?? null,
       toY: (p: number) => candleRef.current?.priceToCoordinate(p) ?? null,
+      visibleRange: () => chartRef.current?.timeScale().getVisibleLogicalRange() ?? null,
+      pane: () => {
+        const size = chartRef.current?.paneSize();
+        return size ? { width: size.width, height: size.height } : null;
+      },
+      maPoint: (id: number, index: number) => {
+        const chart = chartRef.current;
+        const series = candleRef.current;
+        const data = loadedRef.current;
+        const inst = indicatorRef.current.find((i) => i.id === id);
+        if (!chart || !series || !data || !inst) return null;
+        const def = indicatorDef(inst.kind);
+        if (def.placement !== "price") return null;
+        const spec = getSymbolSpec(data.symbol);
+        const count = Math.max(0, Math.min(posRef.current, data.bars.length));
+        let cache = indicatorCachesRef.current.get(id);
+        if (!cache) {
+          cache = createIndicatorValuesCache();
+          indicatorCachesRef.current.set(id, cache);
+        }
+        const values = ensureIndicatorValues(cache, data.bars, indicatorSignature(inst, spec.pipSize), count, () =>
+          def.compute(data.bars, count, inst.params, { pipSize: spec.pipSize }),
+        );
+        const first = indicatorOutputs(inst)[0];
+        const value = first ? values[first.key]?.[index] : null;
+        if (value == null) return null;
+        const x = chart.timeScale().timeToCoordinate(data.bars[index].ts as UTCTimestamp);
+        const y = series.priceToCoordinate(value);
+        if (x == null || y == null) return null;
+        return { x, y, value };
+      },
     };
   }, []);
 
@@ -370,25 +413,156 @@ export function Chart() {
   useEffect(() => {
     const canvas = overlayRef.current;
     if (!canvas) return;
-    const loop = () => {
+    const paint = () => {
+      const m = measureRef.current;
       drawOverlay(
         canvas,
         chartRef.current,
         candleRef.current,
         loadedRef.current,
-        fibsRef.current,
-        fibAnchorRef.current,
-        fibToolRef.current ? FIB_COLOR_BY_KIND[fibToolRef.current as keyof typeof FIB_COLOR_BY_KIND] : "#2dd4bf",
+        posRef.current,
+        {
+          fibs: fibsRef.current,
+          fibAnchor: fibAnchorRef.current,
+          fibTool: fibToolRef.current,
+          shapes: shapesRef.current,
+          shapeTool: shapeToolRef.current,
+          shapeAnchor: shapeAnchorRef.current,
+          indicators: indicatorRef.current,
+          hover: hoverRef.current,
+          measure: m.a ? { a: m.a, b: m.b, preview: m.preview } : null,
+        },
+        indicatorCachesRef.current,
       );
-      return requestAnimationFrame(loop);
     };
-    if (fibs.length === 0 && fibTool === null) {
-      drawOverlay(canvas, chartRef.current, candleRef.current, loadedRef.current, [], null, "#2dd4bf");
+    const active =
+      fibs.length > 0 ||
+      fibTool !== null ||
+      shapes.length > 0 ||
+      shapeTool !== null ||
+      indicators.length > 0 ||
+      crosshair;
+    if (!active) {
+      paint();
       return;
     }
-    let raf = requestAnimationFrame(loop);
+    let raf = requestAnimationFrame(function loop() {
+      paint();
+      raf = requestAnimationFrame(loop);
+    });
     return () => cancelAnimationFrame(raf);
-  }, [fibs.length, fibTool, loaded]);
+  }, [fibs.length, fibTool, shapes.length, shapeTool, indicators.length, loaded, crosshair]);
+
+  // Oscillator indicators (RSI, MACD, ATR) in their own panes below the price
+  // chart: native series, rebuilt when the list or their settings change.
+  useEffect(() => {
+    const chart = chartRef.current;
+    const data = loadedRef.current;
+    if (!chart || !data) {
+      paneRuntimesRef.current = [];
+      paneSigRef.current = "";
+      return;
+    }
+    const bars = data.bars;
+    const paneIndicators = indicators.filter((inst) => indicatorDef(inst.kind).placement === "pane");
+    const sig =
+      paneIndicators
+        .map((inst) => `${inst.id}:${inst.kind}:${JSON.stringify(inst.params)}:${JSON.stringify(inst.colors)}`)
+        .join("|") + `|${data.symbol}`;
+    const rewound = paneRuntimesRef.current.some((rt) => pos < rt.pushed);
+    const barsChanged = paneRuntimesRef.current.some((rt) => rt.barsRef !== bars);
+    if (rewound || barsChanged || sig !== paneSigRef.current) {
+      for (const rt of paneRuntimesRef.current) {
+        for (const level of rt.levels) level.series.removePriceLine(level.line);
+        for (const out of rt.outputs) chart.removeSeries(out.series);
+      }
+      paneRuntimesRef.current = [];
+      paneSigRef.current = sig;
+
+      const spec = getSymbolSpec(data.symbol);
+      paneIndicators.forEach((inst, n) => {
+        const def = indicatorDef(inst.kind);
+        const outputs = indicatorOutputs(inst);
+        const runtime: PaneSeriesRuntime = { id: inst.id, outputs: [], levels: [], pushed: 0, barsRef: bars };
+        for (const out of outputs) {
+          const digits = out.digits ?? spec.digits;
+          const priceFormat = { type: "price" as const, precision: digits, minMove: Math.pow(10, -digits) };
+          const series =
+            out.style === "histogram"
+              ? chart.addSeries(
+                  HistogramSeries,
+                  { color: out.color, priceLineVisible: false, priceFormat },
+                  n + 1,
+                )
+              : chart.addSeries(
+                  LineSeries,
+                  { color: out.color, lineWidth: 2, priceLineVisible: false, priceFormat },
+                  n + 1,
+                );
+          const push =
+            out.style === "histogram"
+              ? (time: UTCTimestamp, value: number) =>
+                  (series as ISeriesApi<"Histogram">).update({
+                    time,
+                    value,
+                    color: value >= 0 ? out.upColor ?? out.color : out.downColor ?? out.color,
+                  })
+              : (time: UTCTimestamp, value: number) => (series as ISeriesApi<"Line">).update({ time, value });
+          runtime.outputs.push({ output: out, series, push });
+        }
+        const main = runtime.outputs[0];
+        if (main) {
+          for (const level of def.levels?.(inst.params) ?? []) {
+            runtime.levels.push({
+              series: main.series,
+              line: main.series.createPriceLine({
+                price: level.value,
+                color: level.color ?? "rgba(148,163,184,0.5)",
+                lineWidth: 1,
+                lineStyle: LineStyle.Dashed,
+                axisLabelVisible: false,
+                title: level.label ?? "",
+              }),
+            });
+          }
+        }
+        paneRuntimesRef.current.push(runtime);
+      });
+
+      // Keep the price pane dominant and share the rest evenly.
+      const panes = chart.panes();
+      panes[0]?.setStretchFactor(4);
+      for (let i = 1; i < panes.length; i++) panes[i].setStretchFactor(1);
+    }
+
+    // Feed the bars added since the last step; the values cache is shared
+    // with the overlay so each indicator is computed once per replay step.
+    const spec = getSymbolSpec(data.symbol);
+    for (const rt of paneRuntimesRef.current) {
+      if (rt.pushed >= pos) continue;
+      const inst = indicators.find((i) => i.id === rt.id);
+      if (!inst) continue;
+      const def = indicatorDef(inst.kind);
+      let cache = indicatorCachesRef.current.get(inst.id);
+      if (!cache) {
+        cache = createIndicatorValuesCache();
+        indicatorCachesRef.current.set(inst.id, cache);
+      }
+      const values = ensureIndicatorValues(cache, bars, indicatorSignature(inst, spec.pipSize), pos, () =>
+        def.compute(bars, pos, inst.params, { pipSize: spec.pipSize }),
+      );
+      for (let i = rt.pushed; i < pos; i++) {
+        const time = bars[i]?.ts;
+        if (time == null) break;
+        for (const out of rt.outputs) {
+          const value = values[out.output.key]?.[i];
+          if (value == null) continue;
+          out.push(time as UTCTimestamp, value);
+        }
+      }
+      rt.pushed = pos;
+    }
+  }, [indicators, loaded, pos]);
 
   // Chart interaction: place points, drag anchors/whole tool, right-click to edit.
   useEffect(() => {
@@ -398,34 +572,173 @@ export function Chart() {
       const r = el.getBoundingClientRect();
       return { x: e.clientX - r.left, y: e.clientY - r.top };
     };
-    let down: { x: number; y: number; t: number } | null = null;
+    let down: { x: number; y: number; t: number; maId: number | null } | null = null;
+    /** Rubber-band line shown while an SL/TP line is being dragged. */
+    let tempStopLine: IPriceLine | null = null;
+
+    const chartPointFromEvent = (e: MouseEvent): ShapePoint | null => {
+      const chart = chartRef.current;
+      const series = candleRef.current;
+      const bars = loadedRef.current?.bars;
+      if (!chart || !series || !bars) return null;
+      const p = local(e);
+      const price = series.coordinateToPrice(p.y);
+      if (price == null) return null;
+      let timeNum: number | null = null;
+      const time = chart.timeScale().coordinateToTime(p.x);
+      if (typeof time === "number") timeNum = time;
+      else {
+        const logical = chart.timeScale().coordinateToLogical(p.x);
+        const processed = Math.max(0, Math.min(posRef.current, bars.length));
+        if (logical != null && processed > 0) {
+          const idx = Math.max(0, Math.min(processed - 1, Math.round(logical)));
+          timeNum = bars[idx].ts;
+        }
+      }
+      if (timeNum == null) return null;
+      return { time: timeNum, price: Math.max(0.00001, price) };
+    };
+
+    // Crosshair ruler: snaps a pointer event to the nearest bar and the price
+    // under the cursor, which is what MT4's crosshair reports between clicks.
+    const snapMeasurePoint = (e: MouseEvent): MeasurePoint | null => {
+      const chart = chartRef.current;
+      const series = candleRef.current;
+      const bars = loadedRef.current?.bars;
+      if (!chart || !series || !bars) return null;
+      const processed = Math.max(0, Math.min(posRef.current, bars.length));
+      if (processed === 0) return null;
+      const p = local(e);
+      const pane = chart.paneSize();
+      if (p.x < 0 || p.y < 0 || p.x > pane.width || p.y > pane.height) return null;
+      const price = series.coordinateToPrice(p.y);
+      if (price == null) return null;
+      const logical = chart.timeScale().coordinateToLogical(p.x);
+      const index = Math.max(0, Math.min(processed - 1, Math.round(logical ?? processed - 1)));
+      return { index, time: bars[index].ts, price: Math.max(0.00001, price) };
+    };
+
+    // Bar under the pointer, for the OHLCV strip at the bottom of the chart.
+    const barIndexAt = (x: number, y: number): number | null => {
+      const chart = chartRef.current;
+      const bars = loadedRef.current?.bars;
+      if (!chart || !bars) return null;
+      const processed = Math.max(0, Math.min(posRef.current, bars.length));
+      if (processed === 0) return null;
+      const pane = chart.paneSize();
+      if (x < 0 || y < 0 || x > pane.width || y > pane.height) return null;
+      const logical = chart.timeScale().coordinateToLogical(x);
+      if (logical == null) return null;
+      const index = Math.round(logical);
+      return index >= 0 && index <= processed - 1 ? index : null;
+    };
 
     const onDown = (e: MouseEvent) => {
       if (e.button !== 0) return;
-      down = { x: e.clientX, y: e.clientY, t: performance.now() };
+      down = { x: e.clientX, y: e.clientY, t: performance.now(), maId: null };
       const chart = chartRef.current;
       const series = candleRef.current;
       const data = loadedRef.current;
-      if (!chart || !series || !data || fibToolRef.current) return;
+      if (!chart || !series || !data || fibToolRef.current || shapeToolRef.current) return;
       const p = local(e);
-      const anchorHit = hitAnchorHandle(chart, series, fibsRef.current, p.x, p.y);
-      const hit = anchorHit ? null : hitTestFib(chart, series, fibsRef.current, p.x, p.y);
-      const target = anchorHit?.fib ?? hit?.fib;
-      if (!target) return;
-      e.stopPropagation();
-      e.preventDefault();
-      dragRef.current = {
-        mode: anchorHit ? (anchorHit.side === "a" ? "anchorA" : "anchorB") : "move",
-        fib: target,
-        idxA: findBarIndex(data.bars, target.a.time),
-        idxB: findBarIndex(data.bars, target.b.time),
-        startX: e.clientX,
-        startY: e.clientY,
-        moved: false,
-      };
+
+      // SL/TP lines win over drawings: drag them straight on the chart.
+      const simNow = useStore.getState().sim;
+      const stopHit = simNow ? hitStopLine(chart, series, simNow, p.x, p.y) : null;
+      if (stopHit) {
+        e.stopPropagation();
+        e.preventDefault();
+        dragRef.current = {
+          kind: "stops",
+          ...stopHit,
+          startX: e.clientX,
+          startY: e.clientY,
+          moved: false,
+        };
+        tempStopLine = series.createPriceLine({
+          price: stopHit.price,
+          color: stopHit.field === "sl" ? "#ef4444" : "#22c55e",
+          lineWidth: 2,
+          lineStyle: LineStyle.Dashed,
+          axisLabelVisible: true,
+          title: stopHit.field.toUpperCase(),
+        });
+        return;
+      }
+
+      const fibAnchorHit = hitTestFibAnchor(chart, series, fibsRef.current, p.x, p.y);
+      const fibHit = fibAnchorHit ? null : hitTestFib(chart, series, fibsRef.current, p.x, p.y);
+      const fibTarget = fibAnchorHit?.fib ?? fibHit?.fib;
+      if (fibTarget) {
+        e.stopPropagation();
+        e.preventDefault();
+        dragRef.current = {
+          kind: "fib",
+          mode: fibAnchorHit ? (fibAnchorHit.side === "a" ? "anchorA" : "anchorB") : "move",
+          fib: fibTarget,
+          idxA: findBarIndex(data.bars, fibTarget.a.time),
+          idxB: findBarIndex(data.bars, fibTarget.b.time),
+          startX: e.clientX,
+          startY: e.clientY,
+          moved: false,
+        };
+        return;
+      }
+
+      const shapeHit = hitTestShape(chart, series, shapesRef.current, p.x, p.y);
+      if (shapeHit) {
+        const shape = shapeHit.shape;
+        e.stopPropagation();
+        e.preventDefault();
+        dragRef.current = {
+          kind: "shape",
+          mode: shapeHit.anchor === "a" ? "anchorA" : shapeHit.anchor === "b" ? "anchorB" : "move",
+          shape,
+          idxA: shape.kind === "horizontal" ? 0 : findBarIndex(data.bars, shape.a.time),
+          idxB: shape.kind === "trend" && shape.b ? findBarIndex(data.bars, shape.b.time) : 0,
+          startX: e.clientX,
+          startY: e.clientY,
+          moved: false,
+        };
+        return;
+      }
+
+      // Remember an MA under the press point: clicking it opens its settings.
+      down.maId = hitTestIndicator(chart, series, data, posRef.current, indicatorRef.current, indicatorCachesRef.current, p.x, p.y);
     };
 
     const onMove = (e: MouseEvent) => {
+      const r = el.getBoundingClientRect();
+      const hx = e.clientX - r.left;
+      const hy = e.clientY - r.top;
+      hoverRef.current = hx >= 0 && hy >= 0 && hx <= r.width && hy <= r.height ? { x: hx, y: hy } : null;
+
+      // Live ruler preview while the crosshair is waiting for its second point.
+      const measured = measureRef.current;
+      if (crosshairRef.current && measured.a != null && measured.b == null) {
+        measured.preview = hoverRef.current ? snapMeasurePoint(e) : null;
+      } else if (measured.preview != null) {
+        measured.preview = null;
+      }
+
+      // OHLCV strip follows the bar under the pointer (state changes per bar only).
+      const hoverIdx = hoverRef.current ? barIndexAt(hoverRef.current.x, hoverRef.current.y) : null;
+      if (hoverIdx !== hoverBarRef.current) {
+        hoverBarRef.current = hoverIdx;
+        setHoverBar(hoverIdx);
+      }
+
+      // Show a resize pointer over draggable SL/TP lines.
+      const cursorSim = useStore.getState().sim;
+      const cursorChart = chartRef.current;
+      const cursorSeries = candleRef.current;
+      const overStop =
+        hoverRef.current && cursorSim && cursorChart && cursorSeries
+          ? hitStopLine(cursorChart, cursorSeries, cursorSim, hoverRef.current.x, hoverRef.current.y) != null
+          : false;
+      const nextCursor = overStop ? "ns-resize" : "";
+      if (el.style.cursor !== nextCursor) el.style.cursor = nextCursor;
+
       const d = dragRef.current;
       const chart = chartRef.current;
       const series = candleRef.current;
@@ -433,7 +746,17 @@ export function Chart() {
       if (!d || !chart || !series || !data) return;
       e.stopPropagation();
       e.preventDefault();
-      const r = el.getBoundingClientRect();
+
+      if (d.kind === "stops") {
+        const simNow = useStore.getState().sim;
+        const price = series.coordinateToPrice(e.clientY - r.top);
+        if (!simNow || price == null) return;
+        d.price = clampStopsPrice(simNow, d.scope, d.ticket, d.field, price);
+        d.moved = true;
+        tempStopLine?.applyOptions({ price: d.price });
+        return;
+      }
+
       const pNow = series.coordinateToPrice(e.clientY - r.top);
       const pStart = series.coordinateToPrice(d.startY - r.top);
       if (pNow == null || pStart == null) return;
@@ -441,36 +764,94 @@ export function Chart() {
       const barSpacing = Math.max(1, chart.timeScale().options().barSpacing);
       const processed = Math.max(0, Math.min(posRef.current, data.bars.length));
       if (processed === 0) return;
-      let shift = Math.round((e.clientX - d.startX) / barSpacing);
-      if (d.mode === "move") {
+      const rawShift = Math.round((e.clientX - d.startX) / barSpacing);
+      const clampPrice = (x: number) => Math.max(0.00001, x);
+
+      if (d.kind === "fib") {
+        const { fib } = d;
+        let shift = rawShift;
+        if (d.mode === "move") {
+          const minShift = -Math.min(d.idxA, d.idxB);
+          const maxShift = processed - 1 - Math.max(d.idxA, d.idxB);
+          if (maxShift < minShift) return;
+          shift = Math.max(minShift, Math.min(maxShift, shift));
+        } else if (d.mode === "anchorA") {
+          shift = Math.max(-d.idxA, Math.min(processed - 1 - d.idxA, shift));
+        } else {
+          shift = Math.max(-d.idxB, Math.min(processed - 1 - d.idxB, shift));
+        }
+        d.moved = true;
+        if (d.mode === "anchorA") {
+          updateFib({
+            ...fib,
+            a: { time: data.bars[d.idxA + shift].ts, price: clampPrice(fib.a.price + priceDelta) },
+          });
+        } else if (d.mode === "anchorB") {
+          updateFib({
+            ...fib,
+            b: { time: data.bars[d.idxB + shift].ts, price: clampPrice(fib.b.price + priceDelta) },
+          });
+        } else {
+          updateFib({
+            ...fib,
+            a: { time: data.bars[d.idxA + shift].ts, price: clampPrice(fib.a.price + priceDelta) },
+            b: { time: data.bars[d.idxB + shift].ts, price: clampPrice(fib.b.price + priceDelta) },
+          });
+        }
+        return;
+      }
+
+      const { shape } = d;
+      if (shape.kind === "horizontal") {
+        d.moved = true;
+        updateShape({ ...shape, a: { ...shape.a, price: clampPrice(shape.a.price + priceDelta) } });
+        return;
+      }
+      if (shape.kind === "vertical") {
+        const shift = Math.max(-d.idxA, Math.min(processed - 1 - d.idxA, rawShift));
+        d.moved = true;
+        updateShape({ ...shape, a: { ...shape.a, time: data.bars[d.idxA + shift].ts } });
+        return;
+      }
+      if (!shape.b) return;
+      if (d.mode === "anchorA") {
+        const shift = Math.max(-d.idxA, Math.min(processed - 1 - d.idxA, rawShift));
+        d.moved = true;
+        updateShape({
+          ...shape,
+          a: { time: data.bars[d.idxA + shift].ts, price: clampPrice(shape.a.price + priceDelta) },
+        });
+      } else if (d.mode === "anchorB") {
+        const shift = Math.max(-d.idxB, Math.min(processed - 1 - d.idxB, rawShift));
+        d.moved = true;
+        updateShape({
+          ...shape,
+          b: { time: data.bars[d.idxB + shift].ts, price: clampPrice(shape.b.price + priceDelta) },
+        });
+      } else {
         const minShift = -Math.min(d.idxA, d.idxB);
         const maxShift = processed - 1 - Math.max(d.idxA, d.idxB);
         if (maxShift < minShift) return;
-        shift = Math.max(minShift, Math.min(maxShift, shift));
-      } else if (d.mode === "anchorA") {
-        shift = Math.max(-d.idxA, Math.min(processed - 1 - d.idxA, shift));
-      } else {
-        shift = Math.max(-d.idxB, Math.min(processed - 1 - d.idxB, shift));
+        const shift = Math.max(minShift, Math.min(maxShift, rawShift));
+        d.moved = true;
+        updateShape({
+          ...shape,
+          a: { time: data.bars[d.idxA + shift].ts, price: clampPrice(shape.a.price + priceDelta) },
+          b: { time: data.bars[d.idxB + shift].ts, price: clampPrice(shape.b.price + priceDelta) },
+        });
       }
-      d.moved = true;
-      const clampPrice = (x: number) => Math.max(0.00001, x);
-      const { fib } = d;
-      if (d.mode === "anchorA") {
-        updateFib({
-          ...fib,
-          a: { time: data.bars[d.idxA + shift].ts, price: clampPrice(fib.a.price + priceDelta) },
-        });
-      } else if (d.mode === "anchorB") {
-        updateFib({
-          ...fib,
-          b: { time: data.bars[d.idxB + shift].ts, price: clampPrice(fib.b.price + priceDelta) },
-        });
+    };
+
+    const commitStopDrag = (d: StopsDragState) => {
+      const state = useStore.getState();
+      const sim = state.sim;
+      if (!sim) return;
+      if (d.scope === "position") {
+        const pos = sim.positions.find((p) => p.ticket === d.ticket);
+        if (!pos) return;
+        state.modifyPosition(d.ticket, d.field === "sl" ? d.price : pos.sl, d.field === "tp" ? d.price : pos.tp);
       } else {
-        updateFib({
-          ...fib,
-          a: { time: data.bars[d.idxA + shift].ts, price: clampPrice(fib.a.price + priceDelta) },
-          b: { time: data.bars[d.idxB + shift].ts, price: clampPrice(fib.b.price + priceDelta) },
-        });
+        state.modifyPending(d.ticket, d.field === "sl" ? { sl: d.price } : { tp: d.price });
       }
     };
 
@@ -480,91 +861,220 @@ export function Chart() {
       if (d) {
         dragRef.current = null;
         e.stopPropagation();
+        if (tempStopLine) {
+          candleRef.current?.removePriceLine(tempStopLine);
+          tempStopLine = null;
+        }
         if (d.moved) e.preventDefault();
+        if (d.kind === "stops") {
+          if (d.moved) commitStopDrag(d);
+          return;
+        }
         return;
       }
       if (!down) return;
       const movedPx = Math.hypot(e.clientX - down.x, e.clientY - down.y);
       const heldMs = performance.now() - down.t;
+      const maId = down.maId;
       down = null;
       if (movedPx > 6 || heldMs > 600) return;
-      const tool = fibToolRef.current;
-      if (!tool) return;
       const chart = chartRef.current;
       const series = candleRef.current;
-      if (!chart || !series) return;
-      const p = local(e);
-      const price = series.coordinateToPrice(p.y);
-      if (price == null) return;
-      let timeNum: number | null = null;
-      const time = chart.timeScale().coordinateToTime(p.x);
-      if (typeof time === "number") timeNum = time;
-      else {
-        const logical = chart.timeScale().coordinateToLogical(p.x);
-        const bars = loadedRef.current?.bars ?? [];
-        const processed = Math.max(0, Math.min(posRef.current, bars.length));
-        if (logical != null && processed > 0) {
-          const idx = Math.max(0, Math.min(processed - 1, Math.round(logical)));
-          timeNum = bars[idx].ts;
+      const data = loadedRef.current;
+      if (!chart || !series || !data) return;
+
+      const tool = fibToolRef.current;
+      if (tool) {
+        const point = chartPointFromEvent(e);
+        if (!point) return;
+        const start = fibAnchorRef.current;
+        if (!start) {
+          setFibAnchor(point);
+          return;
         }
-      }
-      if (timeNum == null) return;
-      const point: FibAnchor = { time: timeNum, price };
-      const start = fibAnchorRef.current;
-      if (!start) {
-        setFibAnchor(point);
+        const kind = tool === "extension" ? "extension" : "retracement";
+        addFib({
+          id: fibSeq.current++,
+          a: start,
+          b: point,
+          color: FIB_COLOR_BY_KIND[kind],
+          levels: fibLevelsFor(kind),
+        });
+        setFibAnchor(null);
+        setFibTool(null);
         return;
       }
-      const kind = tool === "extension" ? "extension" : "retracement";
-      addFib({
-        id: fibSeq.current++,
-        a: start,
-        b: point,
-        color: FIB_COLOR_BY_KIND[kind],
-        levels: fibLevelsFor(kind),
-      });
-      setFibAnchor(null);
-      setFibTool(null);
+
+      const shapeToolNow = shapeToolRef.current;
+      if (shapeToolNow) {
+        const point = chartPointFromEvent(e);
+        if (!point) return;
+        if (shapeToolNow === "trend") {
+          const start = shapeAnchorRef.current;
+          if (!start) {
+            setShapeAnchor(point);
+            return;
+          }
+          addShape({
+            id: shapeSeq.current++,
+            kind: "trend",
+            a: start,
+            b: point,
+            color: SHAPE_COLOR_BY_KIND.trend,
+          });
+          setShapeAnchor(null);
+          setShapeTool(null);
+          return;
+        }
+        const kind = shapeToolNow === "horizontal" ? "horizontal" : "vertical";
+        addShape({ id: shapeSeq.current++, kind, a: point, b: null, color: SHAPE_COLOR_BY_KIND[kind] });
+        setShapeTool(null);
+        return;
+      }
+
+      // Crosshair ruler: the first click anchors point A, the second completes
+      // the span (a third click starts a fresh measurement).
+      if (crosshairRef.current) {
+        const point = snapMeasurePoint(e);
+        if (!point) return;
+        const m = measureRef.current;
+        if (m.a == null || m.b != null) {
+          m.a = point;
+          m.b = null;
+        } else {
+          m.b = point;
+        }
+        m.preview = null;
+        return;
+      }
+
+      // Clicking a moving-average line opens its settings window.
+      if (maId != null) openIndicatorEditor(maId);
     };
 
     const onContext = (e: MouseEvent) => {
       const chart = chartRef.current;
       const series = candleRef.current;
-      if (!chart || !series) return;
+      const data = loadedRef.current;
+      if (!chart || !series || !data) return;
       const p = local(e);
-      const hit = hitTestFib(chart, series, fibsRef.current, p.x, p.y);
-      if (!hit) return;
-      e.preventDefault();
-      e.stopPropagation();
-      setMenu({ fibId: hit.fib.id, levelRatio: hit.levelRatio, x: e.clientX, y: e.clientY });
+
+      const fibHit = hitTestFib(chart, series, fibsRef.current, p.x, p.y);
+      if (fibHit) {
+        e.preventDefault();
+        e.stopPropagation();
+        setMenu({ fibId: fibHit.fib.id, levelRatio: fibHit.levelRatio, x: e.clientX, y: e.clientY });
+        return;
+      }
+
+      const shapeHit = hitTestShape(chart, series, shapesRef.current, p.x, p.y);
+      if (shapeHit) {
+        e.preventDefault();
+        e.stopPropagation();
+        setShapeMenu({ shapeId: shapeHit.shape.id, x: e.clientX, y: e.clientY });
+        return;
+      }
+
+      const maId = hitTestIndicator(chart, series, data, posRef.current, indicatorRef.current, indicatorCachesRef.current, p.x, p.y);
+      if (maId != null) {
+        e.preventDefault();
+        e.stopPropagation();
+        openIndicatorEditor(maId);
+      }
+    };
+
+    const onLeave = () => {
+      hoverRef.current = null;
+      el.style.cursor = "";
+      if (hoverBarRef.current !== null) {
+        hoverBarRef.current = null;
+        setHoverBar(null);
+      }
     };
 
     el.addEventListener("mousedown", onDown, true);
     el.addEventListener("contextmenu", onContext, true);
-    window.addEventListener("mousemove", onMove, true);
+    el.addEventListener("mousemove", onMove, true);
+    el.addEventListener("mouseleave", onLeave);
     window.addEventListener("mouseup", onUp, true);
     return () => {
+      if (tempStopLine) {
+        candleRef.current?.removePriceLine(tempStopLine);
+        tempStopLine = null;
+      }
       el.removeEventListener("mousedown", onDown, true);
       el.removeEventListener("contextmenu", onContext, true);
-      window.removeEventListener("mousemove", onMove, true);
+      el.removeEventListener("mousemove", onMove, true);
+      el.removeEventListener("mouseleave", onLeave);
       window.removeEventListener("mouseup", onUp, true);
     };
-  }, [addFib, setFibAnchor, setFibTool, updateFib]);
+  }, [
+    addFib,
+    addShape,
+    openIndicatorEditor,
+    setFibAnchor,
+    setFibTool,
+    setShapeAnchor,
+    setShapeTool,
+    updateFib,
+    updateShape,
+  ]);
 
-  // Escape closes the editor / cancels a drawing in progress.
+  // Escape closes editors / menus and cancels a drawing in progress.
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
       if (e.key !== "Escape") return;
       if (menu) return setMenu(null);
+      if (shapeMenu) return setShapeMenu(null);
       if (editorFib != null) return setEditorFib(null);
+      if (editorShape != null) return setEditorShape(null);
+      if (indicatorEditorId != null) return openIndicatorEditor(null);
       if (fibTool) {
         setFibTool(null);
         setFibAnchor(null);
+        return;
+      }
+      if (shapeTool) {
+        setShapeTool(null);
+        setShapeAnchor(null);
+        return;
+      }
+      // Crosshair: Esc clears the ruler first, a second Esc leaves the mode.
+      // Keystrokes typed into a form field (e.g. the Symbol box) are not ours.
+      if (crosshair) {
+        const typedInField =
+          e.target instanceof HTMLElement &&
+          e.target.closest("input, textarea, select, [contenteditable='true']") != null;
+        if (!typedInField) {
+          const m = measureRef.current;
+          if (m.a != null) {
+            m.a = null;
+            m.b = null;
+            m.preview = null;
+            return;
+          }
+          setCrosshair(false);
+        }
       }
     };
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
-  }, [menu, editorFib, fibTool, setFibTool, setFibAnchor]);
+  }, [
+    menu,
+    shapeMenu,
+    editorFib,
+    editorShape,
+    indicatorEditorId,
+    fibTool,
+    shapeTool,
+    crosshair,
+    setFibTool,
+    setFibAnchor,
+    setShapeTool,
+    setShapeAnchor,
+    setCrosshair,
+    openIndicatorEditor,
+  ]);
 
   // Candles, volume, markers, order/position lines.
   useEffect(() => {
@@ -617,7 +1127,8 @@ export function Chart() {
     for (const line of linesRef.current) candles.removePriceLine(line);
     linesRef.current = [];
     if (sim) {
-      // Pending orders: dashed line at the trigger price with ticket + type.
+      // Pending orders: dashed line at the trigger price with ticket + type,
+      // plus their SL/TP lines when the order carries them.
       for (const o of sim.pendings) {
         const isBuy = o.type === "buy_limit" || o.type === "buy_stop";
         linesRef.current.push(
@@ -630,6 +1141,30 @@ export function Chart() {
             title: `${PENDING_LABELS[o.type]} #${o.ticket}`,
           }),
         );
+        if (o.sl != null) {
+          linesRef.current.push(
+            candles.createPriceLine({
+              price: o.sl,
+              color: "rgba(239,68,68,0.75)",
+              lineWidth: 1,
+              lineStyle: LineStyle.Dotted,
+              axisLabelVisible: true,
+              title: `SL #${o.ticket}`,
+            }),
+          );
+        }
+        if (o.tp != null) {
+          linesRef.current.push(
+            candles.createPriceLine({
+              price: o.tp,
+              color: "rgba(34,197,94,0.75)",
+              lineWidth: 1,
+              lineStyle: LineStyle.Dotted,
+              axisLabelVisible: true,
+              title: `TP #${o.ticket}`,
+            }),
+          );
+        }
       }
       // Open positions: entry + SL/TP lines (entry label becomes BUY/SELL on fill).
       for (const p of sim.positions) {
@@ -678,10 +1213,21 @@ export function Chart() {
 
   const lastBar = loaded && pos > 0 ? loaded.bars[pos - 1] : null;
   const spec = loaded ? getSymbolSpec(loaded.symbol) : null;
+
+  // Bar data shown in the strip under the cursor (formatted by the chart).
+  const hoveredBar =
+    loaded && hoverBar != null && hoverBar >= 0 && hoverBar < pos && hoverBar < loaded.bars.length
+      ? loaded.bars[hoverBar]
+      : null;
+  const hoveredPrev = loaded && hoveredBar && hoverBar != null && hoverBar > 0 ? loaded.bars[hoverBar - 1] : null;
   const spreadPips = lastBar && spec ? (lastBar.ask.c - lastBar.bid.c) / spec.pipSize : null;
   const change = lastBar && pos >= 2 && loaded ? lastBar.bid.c - loaded.bars[pos - 2].bid.c : null;
 
   const editorTarget = editorFib != null ? fibs.find((f) => f.id === editorFib) ?? null : null;
+  const shapeTarget = editorShape != null ? shapes.find((s) => s.id === editorShape) ?? null : null;
+  const indicatorTarget =
+    indicatorEditorId != null ? indicators.find((inst) => inst.id === indicatorEditorId) ?? null : null;
+  const shapeMenuTarget = shapeMenu ? shapes.find((s) => s.id === shapeMenu.shapeId) ?? null : null;
 
   const menuItems: MenuItem[] = [];
   if (menu) {
@@ -697,6 +1243,12 @@ export function Chart() {
     }
     menuItems.push({ label: "Edit levels & colour…", onClick: () => setEditorFib(menu.fibId) });
     menuItems.push({ label: "Remove Fibonacci", danger: true, onClick: () => removeFib(menu.fibId) });
+  }
+
+  const shapeMenuItems: MenuItem[] = [];
+  if (shapeMenu && shapeMenuTarget) {
+    shapeMenuItems.push({ label: "Edit colour…", onClick: () => setEditorShape(shapeMenuTarget.id) });
+    shapeMenuItems.push({ label: "Remove line", danger: true, onClick: () => removeShape(shapeMenuTarget.id) });
   }
 
   return (
@@ -715,8 +1267,29 @@ export function Chart() {
         </div>
       ) : null}
 
-      <div ref={containerRef} className="chart-canvas" />
+      <div ref={containerRef} className={`chart-canvas ${crosshair ? "crosshair-on" : ""}`} />
       <canvas ref={overlayRef} className="chart-overlay" />
+
+      {loaded && spec && hoveredBar ? (
+        <div className="chart-data-strip">
+          <span className="data-stamp">{fmtTime(hoveredBar.ts)} UTC</span>
+          <span>O <b>{fmtPrice(hoveredBar.bid.o, spec.digits)}</b></span>
+          <span>H <b>{fmtPrice(hoveredBar.bid.h, spec.digits)}</b></span>
+          <span>L <b>{fmtPrice(hoveredBar.bid.l, spec.digits)}</b></span>
+          <span>
+            C{" "}
+            <b className={hoveredPrev && hoveredBar.bid.c < hoveredPrev.bid.c ? "neg" : "pos"}>
+              {fmtPrice(hoveredBar.bid.c, spec.digits)}
+            </b>
+          </span>
+          <span>Vol <b>{hoveredBar.volume.toLocaleString()}</b></span>
+          {hoveredPrev ? (
+            <span className={`data-chg ${hoveredBar.bid.c < hoveredPrev.bid.c ? "neg" : "pos"}`}>
+              Δ {fmtSigned(hoveredBar.bid.c - hoveredPrev.bid.c, spec.digits)}
+            </span>
+          ) : null}
+        </div>
+      ) : null}
 
       {!loaded ? (
         <div className="chart-empty">
@@ -737,6 +1310,10 @@ export function Chart() {
 
       {menu ? <ContextMenu x={menu.x} y={menu.y} items={menuItems} onClose={() => setMenu(null)} /> : null}
 
+      {shapeMenu && shapeMenuTarget ? (
+        <ContextMenu x={shapeMenu.x} y={shapeMenu.y} items={shapeMenuItems} onClose={() => setShapeMenu(null)} />
+      ) : null}
+
       {editorTarget ? (
         <FibEditor
           fib={editorTarget}
@@ -744,6 +1321,31 @@ export function Chart() {
           onChange={(updated) => updateFib(updated)}
           onClose={() => setEditorFib(null)}
           onRemove={() => removeFib(editorTarget.id)}
+        />
+      ) : null}
+
+      {shapeTarget ? (
+        <ShapeEditor
+          shape={shapeTarget}
+          onChange={(updated) => updateShape(updated)}
+          onClose={() => setEditorShape(null)}
+          onRemove={() => {
+            removeShape(shapeTarget.id);
+            setEditorShape(null);
+          }}
+        />
+      ) : null}
+
+      {indicatorTarget ? (
+        <IndicatorEditor
+          key={indicatorTarget.id}
+          instance={indicatorTarget}
+          onChange={(updated) => updateIndicator(updated)}
+          onClose={() => openIndicatorEditor(null)}
+          onRemove={() => {
+            removeIndicator(indicatorTarget.id);
+            openIndicatorEditor(null);
+          }}
         />
       ) : null}
     </div>

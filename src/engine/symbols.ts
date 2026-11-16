@@ -107,6 +107,34 @@ export const SYMBOL_SPECS: Record<string, SymbolSpec> = {
 
 export const SYMBOL_CODES = Object.keys(SYMBOL_SPECS);
 
+/** Trims and upper-cases a user-typed symbol code (`" gbpusd "` → `"GBPUSD"`). */
+export function normalizeSymbol(raw: string): string {
+  return raw.trim().toUpperCase().replace(/\s+/g, "");
+}
+
+/**
+ * Codes the symbol box accepts: 2–16 letters/digits, optionally followed by a
+ * broker suffix (`GBPUSD.a`, `XAUUSDm`, `EURUSD-raw`).
+ */
+export function isValidSymbol(raw: string): boolean {
+  return /^[A-Z0-9][A-Z0-9._#\-/]{1,15}$/.test(normalizeSymbol(raw));
+}
+
+/**
+ * Strips a broker suffix so a catalogue entry can be reused:
+ * `GBPUSD.a` → `GBPUSD`, `XAUUSDm` → `XAUUSD`. Null when nothing matches.
+ */
+export function baseSymbolCode(raw: string): string | null {
+  const code = normalizeSymbol(raw);
+  let best: string | null = null;
+  for (const candidate of SYMBOL_CODES) {
+    if (code.length > candidate.length && code.startsWith(candidate)) {
+      if (best == null || candidate.length > best.length) best = candidate;
+    }
+  }
+  return best;
+}
+
 /**
  * Best-effort symbol detection from a filename such as
  * `AUDUSD_M5_2025.json.gz` or `XAUUSD-2024.csv`.
@@ -120,10 +148,14 @@ export function inferSymbolFromFilename(name: string): string | null {
 }
 
 export function getSymbolSpec(code: string): SymbolSpec {
-  const spec = SYMBOL_SPECS[code.toUpperCase()];
+  const upper = normalizeSymbol(code);
+  const spec = SYMBOL_SPECS[upper];
   if (spec) return spec;
+  // Broker-suffixed codes ("GBPUSD.a", "XAUUSDm") reuse the plain contract spec
+  // but keep the user's own code for display.
+  const base = baseSymbolCode(upper);
+  if (base) return { ...SYMBOL_SPECS[base], code: upper };
   // Fallback: derive base/quote from a 6-letter code, else generic USD spec.
-  const upper = code.toUpperCase();
   if (/^[A-Z]{6}$/.test(upper)) {
     return {
       code: upper, description: upper, base: upper.slice(0, 3), quote: upper.slice(3),

@@ -11,6 +11,14 @@ const PENDING_TYPES: { value: PendingType; label: string }[] = [
   { value: "sell_stop", label: "Sell Stop" },
 ];
 
+/** Prices are typed as text so a half-finished number never has to be valid. */
+function parsePrice(raw: string): number | null {
+  const t = raw.trim();
+  if (!t) return null;
+  const n = Number(t);
+  return Number.isFinite(n) && n > 0 ? n : null;
+}
+
 export function OrderPanel() {
   const sim = useStore((s) => s.sim);
   const loaded = useStore((s) => s.loaded);
@@ -19,15 +27,14 @@ export function OrderPanel() {
   const placePending = useStore((s) => s.placePending);
 
   const [lots, setLots] = useState(0.1);
-  const [slPips, setSlPips] = useState(0);
-  const [tpPips, setTpPips] = useState(0);
+  const [sl, setSl] = useState("");
+  const [tp, setTp] = useState("");
 
   const [pType, setPType] = useState<PendingType>("buy_limit");
   const [pPrice, setPPrice] = useState("");
   const [pLots, setPLots] = useState(0.1);
-  const [pSl, setPSl] = useState(0);
-  const [pTp, setPTp] = useState(0);
-  const [oco, setOco] = useState(false);
+  const [pSl, setPSl] = useState("");
+  const [pTp, setPTp] = useState("");
 
   void version;
   const bar = sim?.currentBar() ?? null;
@@ -39,7 +46,7 @@ export function OrderPanel() {
   const submitPending = () => {
     const price = Number(pPrice);
     if (!Number.isFinite(price) || price <= 0) return;
-    placePending(pType, pLots, price, pSl, pTp, oco);
+    placePending(pType, pLots, price, parsePrice(pSl), parsePrice(pTp));
     setPPrice("");
   };
 
@@ -66,20 +73,20 @@ export function OrderPanel() {
         </label>
         <div className="two-col">
           <label>
-            <span>SL (pips)</span>
-            <input type="number" min={0} step={1} value={slPips} onChange={(e) => setSlPips(Number(e.target.value))} />
+            <span>SL (price)</span>
+            <input type="number" step="any" min={0} value={sl} placeholder="none" onChange={(e) => setSl(e.target.value)} />
           </label>
           <label>
-            <span>TP (pips)</span>
-            <input type="number" min={0} step={1} value={tpPips} onChange={(e) => setTpPips(Number(e.target.value))} />
+            <span>TP (price)</span>
+            <input type="number" step="any" min={0} value={tp} placeholder="none" onChange={(e) => setTp(e.target.value)} />
           </label>
         </div>
         <div className="trade-buttons">
-          <button className="buy-btn" disabled={!canTrade} onClick={() => buyMarket("buy", lots, slPips, tpPips)}>
+          <button className="buy-btn" disabled={!canTrade} onClick={() => buyMarket("buy", lots, parsePrice(sl), parsePrice(tp))}>
             BUY
             {ask != null && spec ? <small>{fmtPrice(ask, spec.digits)}</small> : null}
           </button>
-          <button className="sell-btn" disabled={!canTrade} onClick={() => buyMarket("sell", lots, slPips, tpPips)}>
+          <button className="sell-btn" disabled={!canTrade} onClick={() => buyMarket("sell", lots, parsePrice(sl), parsePrice(tp))}>
             SELL
             {bid != null && spec ? <small>{fmtPrice(bid, spec.digits)}</small> : null}
           </button>
@@ -103,7 +110,7 @@ export function OrderPanel() {
             <span>Trigger price</span>
             <input
               type="number"
-              step="0.00001"
+              step="any"
               value={pPrice}
               placeholder={ask != null && spec ? fmtPrice(ask, spec.digits) : "price"}
               onChange={(e) => setPPrice(e.target.value)}
@@ -116,18 +123,14 @@ export function OrderPanel() {
         </div>
         <div className="two-col">
           <label>
-            <span>SL (pips)</span>
-            <input type="number" min={0} step={1} value={pSl} onChange={(e) => setPSl(Number(e.target.value))} />
+            <span>SL (price)</span>
+            <input type="number" step="any" min={0} value={pSl} placeholder="none" onChange={(e) => setPSl(e.target.value)} />
           </label>
           <label>
-            <span>TP (pips)</span>
-            <input type="number" min={0} step={1} value={pTp} onChange={(e) => setPTp(Number(e.target.value))} />
+            <span>TP (price)</span>
+            <input type="number" step="any" min={0} value={pTp} placeholder="none" onChange={(e) => setPTp(e.target.value)} />
           </label>
         </div>
-        <label className="checkbox-row">
-          <input type="checkbox" checked={oco} onChange={(e) => setOco(e.target.checked)} />
-          <span>OCO — cancel siblings when one fills</span>
-        </label>
         <button className="secondary-btn wide" onClick={submitPending} disabled={!canTrade}>
           Place pending order
         </button>

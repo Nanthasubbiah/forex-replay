@@ -33,7 +33,6 @@ prices. M5+ is free; M1 and the current year need a free account on their site.
 | Market orders (fill at ask for buys, bid for sells) | ✅ |
 | Pending: Buy Limit / Sell Limit / Buy Stop / Sell Stop | ✅ |
 | SL / TP (intrabar, gap-aware, conservative SL-first) | ✅ |
-| OCO pending groups | ✅ |
 | Swap per lot per night, triple swap on Wednesday | ✅ |
 | Commission per lot per side | ✅ |
 | Stop-out when margin level < X% (worst position first) | ✅ |
@@ -43,6 +42,14 @@ prices. M5+ is free; M1 and the current year need a free account on their site.
 ### Trading desk
 - Pending orders are drawn on the chart as dashed lines labelled `BUY STOP #12` etc.;
   when triggered they are replaced by the `BUY #12 0.10` position line (same for sells).
+  A pending order that carries SL/TP also draws those two levels on the chart.
+- The order panel takes **SL/TP as prices**, not pips — both for market orders and pending
+  orders (leave a field empty for none; the engine validates the side of the entry).
+- **Drag an SL or TP line** on the chart to move it — for open positions *and* for pending
+  orders. The line sticks to the valid side of the entry/trigger price while you drag and is
+  committed (with the usual toast/validation) when you release the mouse.
+- Hovering any bar shows its **date, time, OHLC and volume** in a strip at the bottom of the
+  chart (`▲`/`▼` colouring on the close), so you can inspect a candle without leaving the chart.
 - Right-click any row in *Positions* to **modify SL/TP** or **close**, and in *Open orders*
   to **modify** (trigger price / SL / TP) or **cancel**. All validation is done by the engine
   and errors appear as toasts.
@@ -62,12 +69,49 @@ prices. M5+ is free; M1 and the current year need a free account on their site.
     colour picker + palette, and remove the tool;
   - `Esc` cancels a drawing in progress; `Clear` (toolbar) removes all drawings.
 
+- **Line tools** live in the `Shapes ▾` toolbar tab:
+  - **Vertical line** and **Horizontal line** — one click to place them on the chart;
+  - **Trend line** — two clicks to connect two points; past the second point it is projected as
+    a dashed continuation all the way to the right edge of the chart window (the projection is
+    grabbable, so dragging it pans the line like the rest of it).
+  Every line can be dragged to pan it (dragging a trend-line endpoint re-aims it). Right-click
+  a line to change its colour or remove it; `Clear` removes all Fibonacci and line drawings.
+
+- **Crosshair ruler** (MT4-style): the `Crosshair` toolbar button arms a measuring crosshair.
+  Click one point, then a second: the chart draws the span and an on-chart label that reads the
+  **bar count**, the **elapsed time** and the price distance in **pips and points** (derived
+  from the symbol's pip size and digits, so it is correct for FX, JPY pairs, metals, indices
+  and crypto). Moving the pointer previews the numbers before the second click is committed.
+  Click again to start a new measurement; `Esc` clears the ruler (a second `Esc` leaves the
+  crosshair mode).
+
+- **Indicators** live in the `Indicators ▾` tab. Every indicator is defined once in a
+  small registry (`src/lib/indicatorRegistry.ts`) as `compute(bars, count, params) → buffers`
+  plus rendering metadata, so the menu, the settings editor and the chart renderer are shared:
+
+  | Indicator | Placement | Outputs |
+  | --- | --- | --- |
+  | Moving average (SMA / EMA) | price pane | line (+ direction colours, + pip bounds) |
+  | Bollinger Bands | price pane | basis + upper / lower bands |
+  | RSI (Wilder) | own pane | line with 30 / 50 / 70 guides |
+  | MACD | own pane | MACD + signal lines, coloured histogram |
+  | ATR (Wilder) | own pane | line |
+
+  - **Price-pane** indicators draw on the chart canvas and can be clicked to edit their settings.
+  - **Oscillators** get their own pane below the price chart; open them from the Indicators menu
+    to change parameters or colours.
+  - **Moving average extras**: *Colour by direction* (rising / falling segments get their own
+    colours) and *Bounds* (dashed lines shifted by the pip distance you enter).
+  - Values are recomputed as the replay advances and never use future bars; the replay reset
+    rewinds every series. Replay renames/resets keep the configured indicators.
+
 ### Replay & analysis
 - Bar-by-bar replay with play/pause/step, 1×–400× speed, progress + UTC timestamp.
-- Candlestick chart (lightweight-charts), volume, trade markers, live SL/TP/entry lines.
+- Candlestick chart (lightweight-charts), volume histogram (toggle with the `Volumes`
+  toolbar button), trade markers, live SL/TP/entry lines.
 - Statistics: net profit, return %, profit factor, win rate, expectancy, avg win/loss,
   max drawdown (abs & %), streaks, commission, swap, monthly P/L table.
-- Journal of every fill, pending trigger, OCO cancel, swap charge and stop-out.
+- Journal of every fill, pending trigger, swap charge and stop-out.
 
 ### Strategy API (TypeScript, runs in-browser)
 ```ts
@@ -98,10 +142,26 @@ npm install
 npm run dev        # http://localhost:5173 (port may vary)
 ```
 
-1. **Demo data** → loads a synthetic EURUSD M5 year (6,000 bars) instantly.
+1. **Demo data** → loads a synthetic M5 year (6,000 bars) instantly — for whichever symbol is in the
+   **Symbol** box (EURUSD by default).
 2. or **Load data** → pick your downloaded `SYMBOL_TF_YEAR.json.gz` (or a CSV export).
 3. Press ▶ Play / ⏭ Step, then trade from the order panel.
 4. See the *Statistics* tab for the statement.
+
+### Choosing the symbol
+The **Symbol** box in the top bar is editable, so the replay is not tied to EURUSD:
+
+- type any code (`GBPUSD`, `USDJPY`, `XAUUSD`, …) and press **Enter** (or blur the box);
+  the built-in catalogue autocompletes as you type;
+- **before loading** it decides the symbol the next load uses — useful when the file name carries
+  no symbol (`2026.json.gz`), which would otherwise keep the previous one;
+- **after loading** it re-labels the bars in place: the simulator is rebuilt with that symbol's
+  contract spec (pip size, contract size, digits), so pips, margin, pip value and the price axis
+  all follow, and the replay restarts from bar 1 (drawings and indicators are kept);
+- broker suffixes work too: `GBPUSD.a`, `XAUUSDm`, `EURUSD-raw` reuse the plain contract spec but
+  keep your broker's spelling on screen. Unknown codes fall back to a generic 5-digit, 100k FX
+  contract (6-letter pairs get their base/quote split automatically).
+- `Esc` reverts the box to the symbol in use; junk input is refused with a toast.
 
 ### Supported data files
 | Format | Notes |
@@ -138,29 +198,35 @@ Symbol is inferred from the filename (`AUDUSD_M5_2025.json.gz` → `AUDUSD`), ot
 
 ```
 src/
-  engine/      pure, framework-free simulation core (unit-tested, 45 tests)
+  engine/      pure, framework-free simulation core (unit-tested)
     symbols.ts   contract specs for all 19 evtradelabs symbols
     account.ts   pip value, margin, conversion, P/L
     simulator.ts order lifecycle, SL/TP, stop-out, swap, strategy hooks
     stats.ts     statement statistics + monthly buckets
   data/        evtradelabs JSON.gz / CSV parsers (gzip via DecompressionStream) + demo
   strategy/    Strategy API types + built-in SMA cross
-  ui/          React terminal: chart, account, order panel, replay, tabs
-  store.ts     zustand orchestration (replay clock, settings, toasts)
-tests/         vitest: account math, fills, pendings, stop-out, swap, stats, parsers
+  lib/         pure chart helpers: Fibonacci geometry, moving-average math/cache, line shapes, crosshair ruler math
+  ui/          React terminal: chart, canvas overlay, editors, account, order panel, replay, tabs
+  store.ts     zustand orchestration (replay clock, settings, toasts, drawings, indicators)
+  indicatorRegistry.ts  indicator API: params, colours, outputs, compute functions (MA, RSI, MACD, ATR, Bollinger)
+tests/         vitest: account math, fills, pendings, stop-out, swap, stats, parsers, indicators, ruler math
 scripts/       headless Chrome smoke tests (playwright-core, system chrome — no download)
 ```
 
 ### Verify it
 ```bash
-npm test              # 45 engine/parser tests (vitest)
+npm test              # 104 engine/parser/indicator/symbol/shape/ruler tests (vitest)
 npm run build         # tsc --noEmit + vite build
 
 # browser smoke tests (needs a dev server on 5199 and /usr/bin/google-chrome):
 npx vite --port 5199 --strictPort &
-node scripts/smoke.mjs           # demo data, play, trade, strategy backtest
-node scripts/smoke-realdata.mjs  # a real evtradelabs file through the UI parser
-node scripts/smoke-actions.mjs   # pending lines, right-click modify/close, Fibonacci tool
+node scripts/smoke.mjs              # demo data, play, trade, strategy backtest
+node scripts/smoke-realdata.mjs     # a real evtradelabs file through the UI parser
+node scripts/smoke-actions.mjs      # pending lines, right-click modify/close, Fibonacci tool
+node scripts/smoke-shapes-ma.mjs    # line tools, MA settings, click-to-edit
+node scripts/verify-indicators.mjs  # RSI / MACD / ATR panes + MA overlay, replay reset
+node scripts/verify-trend-ray.mjs   # trend-line projection to the right edge + drag
+node scripts/smoke-symbol.mjs       # editable Symbol box: re-label, junk input, file fallback
 ```
 
 ---

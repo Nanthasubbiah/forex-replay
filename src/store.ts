@@ -5,8 +5,10 @@ import type { Bar, PendingType, Side } from "./engine/types";
 import { generateDemoBars } from "./data/demo";
 import { parseDataFile } from "./data/parse";
 import { SmaCrossStrategy } from "./strategy/builtin";
-import { getSymbolSpec } from "./engine/symbols";
+import { getSymbolSpec, isValidSymbol, normalizeSymbol } from "./engine/symbols";
 import type { FibAnchor, FibDrawing, FibToolKind } from "./lib/fib";
+import { createIndicatorInstance, type IndicatorInstance, type IndicatorKind } from "./lib/indicatorRegistry";
+import type { DrawingShape, ShapePoint, ShapeToolKind } from "./lib/shapes";
 
 export interface AccountSettings {
   initialBalance: number;
@@ -41,6 +43,8 @@ export interface Toast {
 
 interface State {
   loaded: LoadedData | null;
+  /** Symbol code for the replay: the one loaded, or the one the next load uses. */
+  symbol: string;
   /** Number of bars already processed by the simulato. */
   pos: number;
   running: boolean;
@@ -53,10 +57,21 @@ interface State {
   fibs: FibDrawing[];
   fibTool: FibToolKind | null;
   fibAnchor: FibAnchor | null;
+  shapes: DrawingShape[];
+  shapeTool: ShapeToolKind | null;
+  shapeAnchor: ShapePoint | null;
+  indicators: IndicatorInstance[];
+  indicatorEditorId: number | null;
+  /** MT4-style crosshair measure mode: two clicks read bars & pip/point distance. */
+  crosshair: boolean;
+  /** Draw the volume histogram under the candles. */
+  showVolume: boolean;
 
   loadDemo: () => void;
   loadFile: (file: File) => Promise<void>;
   loadBars: (symbol: string, bars: Bar[], sourceName: string) => void;
+  /** Sets the replay symbol; with data loaded it re-labels the bars in place. */
+  setSymbol: (symbol: string) => boolean;
   reset: () => void;
   step: () => void;
   play: () => void;
@@ -66,8 +81,10 @@ interface State {
   setStrategy: (kind: StrategyKind | null) => void;
   updateSettings: (patch: Partial<AccountSettings>) => void;
 
-  buyMarket: (side: Side, lots: number, slPips: number, tpPips: number) => void;
-  placePending: (type: PendingType, lots: number, price: number, slPips: number, tpPips: number, oco: boolean) => void;
+  /** `sl`/`tp` are absolute prices; pass `null` to leave them unset. */
+  buyMarket: (side: Side, lots: number, sl: number | null, tp: number | null) => void;
+  /** `sl`/`tp` are absolute prices; pass `null` to leave them unset. */
+  placePending: (type: PendingType, lots: number, price: number, sl: number | null, tp: number | null) => void;
   closeTicket: (ticket: number) => void;
   closeAll: () => void;
   cancelPending: (ticket: number) => void;
@@ -80,11 +97,26 @@ interface State {
   addFib: (fib: FibDrawing) => void;
   updateFib: (updated: FibDrawing) => void;
   removeFib: (id: number) => void;
-  clearFibs: () => void;
+  clearDrawings: () => void;
+
+  setShapeTool: (tool: ShapeToolKind | null) => void;
+  setShapeAnchor: (anchor: ShapePoint | null) => void;
+  addShape: (shape: DrawingShape) => void;
+  updateShape: (updated: DrawingShape) => void;
+  removeShape: (id: number) => void;
+
+  addIndicator: (kind: IndicatorKind) => void;
+  updateIndicator: (updated: IndicatorInstance) => void;
+  removeIndicator: (id: number) => void;
+  clearIndicators: () => void;
+  openIndicatorEditor: (id: number | null) => void;
+
+  setCrosshair: (on: boolean) => void;
+  setShowVolume: (on: boolean) => void;
 }
 
 let timer: ReturnType<typeof setInterval> | null = null;
-let ocoSeq = 1;
+let indicatorSeq = 1;
 
 function stopTimer(): void {
   if (timer) {
@@ -113,6 +145,7 @@ function isAtEnd(loaded: LoadedData, pos: number): boolean {
 
 export const useStore = create<State>((set, get) => ({
   loaded: null,
+  symbol: "EURUSD",
   pos: 0,
   running: false,
   speed: 10,
@@ -124,23 +157,35 @@ export const useStore = create<State>((set, get) => ({
   fibs: [],
   fibTool: null,
   fibAnchor: null,
+  shapes: [],
+  shapeTool: null,
+  shapeAnchor: null,
+  indicators: [],
+  indicatorEditorId: null,
+  crosshair: false,
+  showVolume: true,
 
   loadDemo: () => {
-    const bars = generateDemoBars({ symbol: "EURUSD", count: 6000, tfMinutes: 5 });
-    get().loadBars("EURUSD", bars, "Demo — EURUSD M5, synthetic");
-    set({ toast: { kind: "success", message: "Demo EURUSD M5 loaded — press Play or Backtest." } });
+    const symbol = get().symbol;
+    const bars = generateDemoBars({ symbol, count: 6000, tfMinutes: 5 });
+    get().loadBars(symbol, bars, `Demo — ${symbol} M5, synthetic`);
+    set({ toast: { kind: "success", message: `Demo ${symbol} M5 loaded — press Play or Backtest.` } });
   },
 
   loadFile: async (file) => {
     try {
-      const parsed = await parseDataFile(file, {
-        assumeSpreadPips: get().settings.assumeSpreadPips,
-        defaultSymbol: "EURUSD",
-      });
-      const symbol = parsed.symbol ?? "EURUSD";
+      const parsed = await parseDataFile(file, { assumeSpreadPips: get().settings.assumeSpreadPips });
+      // A symbol in the filename wins; otherwise the chart keeps the symbol the
+      // user picked (and they can re-label it afterwards).
+      const symbol = parsed.symbol ?? get().symbol;
       get().loadBars(symbol, parsed.bars, `${file.name} — ${parsed.bars.length.toLocaleString()} bars`);
       const warnings = parsed.warnings.length > 0 ? ` ${parsed.warnings.join(" ")}` : "";
-      set({ toast: { kind: "success", message: `Loaded ${symbol} (${parsed.bars.length.toLocaleString()} bars).${warnings}` } });
+      const hint = parsed.symbol
+        ? ""
+        : ` No symbol in the file name — using ${symbol}; edit the Symbol box to change it.`;
+      set({
+        toast: { kind: "success", message: `Loaded ${symbol} (${parsed.bars.length.toLocaleString()} bars).${warnings}${hint}` },
+      });
     } catch (e) {
       set({ toast: { kind: "error", message: `${file.name}: ${errText(e)}` } });
     }
@@ -151,6 +196,7 @@ export const useStore = create<State>((set, get) => ({
     const sim = new Simulator({ symbol, bars, config: simConfig(get().settings) });
     set({
       loaded: { symbol, bars, sourceName },
+      symbol,
       sim,
       pos: 0,
       running: false,
@@ -158,9 +204,59 @@ export const useStore = create<State>((set, get) => ({
       fibs: [],
       fibTool: null,
       fibAnchor: null,
+      shapes: [],
+      shapeTool: null,
+      shapeAnchor: null,
       version: get().version + 1,
       toast: null,
     });
+  },
+
+  setSymbol: (raw) => {
+    const symbol = normalizeSymbol(raw);
+    if (!isValidSymbol(symbol)) {
+      set({
+        toast: {
+          kind: "error",
+          message: `"${raw.trim()}" is not a usable symbol code — use 2–16 letters or digits, e.g. GBPUSD.`,
+        },
+      });
+      return false;
+    }
+    const { loaded, settings } = get();
+    const previous = get().symbol;
+    if (!loaded || loaded.symbol === symbol) {
+      // Nothing loaded yet (or the data is already labelled this way): the code
+      // simply becomes the symbol the next load will use.
+      set({ symbol });
+      if (!loaded && symbol !== previous) {
+        set({ toast: { kind: "success", message: `Symbol set to ${symbol} — Load data or Demo data will use it.` } });
+      }
+      return true;
+    }
+    // Same bars, new identity: rebuild the simulator (pip size, contract size and
+    // digits come from the symbol) and restart the replay, but keep the drawings.
+    stopTimer();
+    const sim = new Simulator({ symbol, bars: loaded.bars, config: simConfig(settings) });
+    const spec = getSymbolSpec(symbol);
+    // Keep the "source" chip truthful: "Demo — EURUSD M5, synthetic" → GBPUSD.
+    const sourceName = loaded.sourceName.includes(loaded.symbol)
+      ? loaded.sourceName.split(loaded.symbol).join(symbol)
+      : loaded.sourceName;
+    set({
+      symbol,
+      loaded: { ...loaded, symbol, sourceName },
+      sim,
+      pos: 0,
+      running: false,
+      strategyKind: null,
+      version: get().version + 1,
+      toast: {
+        kind: "success",
+        message: `Symbol set to ${symbol} (${spec.description}) — replay restarted from bar 1 with the new contract specs.`,
+      },
+    });
+    return true;
   },
 
   reset: () => {
@@ -254,7 +350,7 @@ export const useStore = create<State>((set, get) => ({
     }
   },
 
-  buyMarket: (side, lots, slPips, tpPips) => {
+  buyMarket: (side, lots, sl, tp) => {
     const { sim, loaded } = get();
     if (!sim || !loaded) return;
     const bar = sim.currentBar();
@@ -263,10 +359,6 @@ export const useStore = create<State>((set, get) => ({
       return;
     }
     try {
-      const spec = getSymbolSpec(loaded.symbol);
-      const fill = side === "buy" ? bar.ask.c : bar.bid.c;
-      const sl = slPips > 0 ? (side === "buy" ? fill - slPips * spec.pipSize : fill + slPips * spec.pipSize) : null;
-      const tp = tpPips > 0 ? (side === "buy" ? fill + tpPips * spec.pipSize : fill - tpPips * spec.pipSize) : null;
       sim.marketOrder(side, lots, { sl, tp, comment: "manual" });
       set({ version: get().version + 1, toast: null });
     } catch (e) {
@@ -274,7 +366,7 @@ export const useStore = create<State>((set, get) => ({
     }
   },
 
-  placePending: (type, lots, price, slPips, tpPips, oco) => {
+  placePending: (type, lots, price, sl, tp) => {
     const { sim, loaded } = get();
     if (!sim || !loaded) return;
     if (!sim.currentBar()) {
@@ -282,11 +374,7 @@ export const useStore = create<State>((set, get) => ({
       return;
     }
     try {
-      const spec = getSymbolSpec(loaded.symbol);
-      const isBuy = type === "buy_limit" || type === "buy_stop";
-      const sl = slPips > 0 ? (isBuy ? price - slPips * spec.pipSize : price + slPips * spec.pipSize) : null;
-      const tp = tpPips > 0 ? (isBuy ? price + tpPips * spec.pipSize : price - tpPips * spec.pipSize) : null;
-      sim.placePending(type, lots, price, { sl, tp, ocoGroup: oco ? ocoSeq++ : null });
+      sim.placePending(type, lots, price, { sl, tp });
       set({ version: get().version + 1, toast: null });
     } catch (e) {
       set({ toast: { kind: "error", message: errText(e) } });
@@ -342,10 +430,45 @@ export const useStore = create<State>((set, get) => ({
 
   setToast: (toast) => set({ toast }),
 
-  setFibTool: (fibTool) => set({ fibTool, fibAnchor: fibTool === null ? null : get().fibAnchor }),
+  setFibTool: (fibTool) =>
+    set({
+      fibTool,
+      fibAnchor: null,
+      ...(fibTool ? { shapeTool: null, shapeAnchor: null } : {}),
+    }),
   setFibAnchor: (fibAnchor) => set({ fibAnchor }),
   addFib: (fib) => set({ fibs: [...get().fibs, fib] }),
   updateFib: (updated) => set({ fibs: get().fibs.map((f) => (f.id === updated.id ? updated : f)) }),
   removeFib: (id) => set({ fibs: get().fibs.filter((f) => f.id !== id) }),
-  clearFibs: () => set({ fibs: [], fibTool: null, fibAnchor: null }),
+  clearDrawings: () =>
+    set({ fibs: [], fibTool: null, fibAnchor: null, shapes: [], shapeTool: null, shapeAnchor: null }),
+
+  setShapeTool: (shapeTool) =>
+    set({
+      shapeTool,
+      shapeAnchor: null,
+      ...(shapeTool ? { fibTool: null, fibAnchor: null } : {}),
+    }),
+  setShapeAnchor: (shapeAnchor) => set({ shapeAnchor }),
+  addShape: (shape) => set({ shapes: [...get().shapes, shape] }),
+  updateShape: (updated) => set({ shapes: get().shapes.map((s) => (s.id === updated.id ? updated : s)) }),
+  removeShape: (id) => set({ shapes: get().shapes.filter((s) => s.id !== id) }),
+
+  addIndicator: (kind) => {
+    const id = indicatorSeq++;
+    const instance = createIndicatorInstance(kind, id);
+    set({ indicators: [...get().indicators, instance], indicatorEditorId: id });
+  },
+  updateIndicator: (updated) =>
+    set({ indicators: get().indicators.map((inst) => (inst.id === updated.id ? updated : inst)) }),
+  removeIndicator: (id) =>
+    set({
+      indicators: get().indicators.filter((inst) => inst.id !== id),
+      indicatorEditorId: get().indicatorEditorId === id ? null : get().indicatorEditorId,
+    }),
+  clearIndicators: () => set({ indicators: [], indicatorEditorId: null }),
+  openIndicatorEditor: (indicatorEditorId) => set({ indicatorEditorId }),
+
+  setCrosshair: (crosshair) => set({ crosshair }),
+  setShowVolume: (showVolume) => set({ showVolume }),
 }));

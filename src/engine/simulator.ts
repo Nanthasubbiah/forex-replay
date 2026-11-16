@@ -60,7 +60,7 @@ export interface SimulatorConfig extends Partial<AccountConfig> {
 
 /**
  * Bar-driven broker simulator with MT4-compatible account semantics:
- * margin/equity/stop-out, pending orders, OCO, swap, commission, slippage.
+ * margin/equity/stop-out, pending orders, swap, commission, slippage.
  *
  * Usage:
  *   const sim = new Simulator({ symbol, bars, config });
@@ -218,7 +218,7 @@ export class Simulator {
     type: PendingType,
     lots: number,
     price: number,
-    opts?: { sl?: number | null; tp?: number | null; comment?: string; ocoGroup?: number | null; expiresAt?: number | null },
+    opts?: { sl?: number | null; tp?: number | null; comment?: string; expiresAt?: number | null },
   ): PendingOrder | null {
     const bar = this.lastBar;
     if (!bar) this.fail("Place a pending order after the replay has started");
@@ -236,7 +236,6 @@ export class Simulator {
       sl: opts?.sl ?? null,
       tp: opts?.tp ?? null,
       comment: opts?.comment ?? "pending",
-      ocoGroup: opts?.ocoGroup ?? null,
       createdAt: bar.ts,
       expiresAt: opts?.expiresAt ?? null,
     };
@@ -468,11 +467,6 @@ export class Simulator {
         continue;
       }
       this.pushEvent("pending_fill", bar.ts, `Pending #${order.ticket} filled @ ${fill.toFixed(this.spec.digits)}`);
-      if (order.ocoGroup != null) {
-        const siblings = this.pendings.filter((o) => o.ocoGroup === order.ocoGroup);
-        this.pendings = this.pendings.filter((o) => o.ocoGroup !== order.ocoGroup);
-        for (const s of siblings) this.pushEvent("pending_cancel", bar.ts, `OCO: pending #${s.ticket} cancelled`);
-      }
     }
   }
 

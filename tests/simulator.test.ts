@@ -132,20 +132,6 @@ describe("pending orders", () => {
     expect(() => sim.placePending("buy_limit", 0.1, 1.2)).toThrow(/below the current ask/i);
   });
 
-  it("cancels OCO siblings when one order fills", () => {
-    const bars = [
-      flatBar(T0, 1.1),
-      bar(T0 + 300, 1.0947, 1.0952, 1.094, 1.0945),
-    ];
-    const sim = makeSim(bars, { initialBalance: 10_000 });
-    sim.step(0);
-    sim.placePending("buy_limit", 0.1, 1.095, { ocoGroup: 7 });
-    sim.placePending("buy_stop", 0.1, 1.12, { ocoGroup: 7 });
-    sim.step(1);
-    expect(sim.positions).toHaveLength(1);
-    expect(sim.pendings).toHaveLength(0);
-  });
-
   it("expires pending orders", () => {
     const bars = [flatBar(T0, 1.1), flatBar(T0 + 300, 1.1)];
     const sim = makeSim(bars, { initialBalance: 10_000 });

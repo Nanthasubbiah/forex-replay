@@ -102,7 +102,6 @@ export interface PendingOrder {
   sl: number | null;
   tp: number | null;
   comment: string;
-  ocoGroup: number | null;
   createdAt: number;
   expiresAt: number | null;
 }

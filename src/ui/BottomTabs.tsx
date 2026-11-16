@@ -137,7 +137,6 @@ export function BottomTabs() {
                     <Th right>Price</Th>
                     <Th right>SL</Th>
                     <Th right>TP</Th>
-                    <Th>OCO</Th>
                     <Th right>Created</Th>
                     <Th></Th>
                   </tr>
@@ -157,7 +156,6 @@ export function BottomTabs() {
                       <Td right>{spec ? fmtPrice(o.price, spec.digits) : o.price}</Td>
                       <Td right>{o.sl != null && spec ? fmtPrice(o.sl, spec.digits) : "—"}</Td>
                       <Td right>{o.tp != null && spec ? fmtPrice(o.tp, spec.digits) : "—"}</Td>
-                      <Td>{o.ocoGroup != null ? `#${o.ocoGroup}` : "—"}</Td>
                       <Td right>{fmtTime(o.createdAt)}</Td>
                       <Td>
                         <button className="link-btn" onClick={() => cancelPending(o.ticket)}>
