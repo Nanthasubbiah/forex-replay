@@ -7,11 +7,11 @@
  */
 import { chromium } from "playwright-core";
 
-const base = process.argv[2] ?? "http://127.0.0.1:5173";
+const base = process.argv[2] ?? "http://127.0.0.1:5199";
 const shot = "scripts/trend-ray.png";
 
 const browser = await chromium.launch({
-  executablePath: "/usr/bin/google-chrome",
+  executablePath: process.env.CHROME_PATH ?? "/usr/bin/google-chrome",
   headless: true,
   args: ["--no-sandbox", "--disable-gpu", "--disable-dev-shm-usage"],
 });

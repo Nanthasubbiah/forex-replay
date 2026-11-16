@@ -1,8 +1,26 @@
+# Dependencies & build output
 node_modules/
 dist/
+*.tsbuildinfo
+
+# Local package tooling
 .npm-cache/
 .npm-logs/
-*.tsbuildinfo
-fixtures/*.gz
-scripts/*.png
+
+# --- Market data: NEVER commit provider data -------------------------------
+# Historical files come from EV Trading Labs (see README) and must not be
+# redistributed. Keep every download outside the tree, or let these rules skip it.
 *.json.gz
+*.csv
+*.zip
+GU-M1.txt
+data/
+
+# Committed screenshots live in docs/screenshots/; these are per-run captures
+scripts/*.png
+
+# Editors & OS
+.DS_Store
+.vscode/
+.idea/
+*.log

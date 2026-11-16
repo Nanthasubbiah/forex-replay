@@ -4,12 +4,26 @@
   "version": "0.1.0",
   "type": "module",
   "description": "Free, self-hosted, browser-based MT4-style forex backtesting desk",
+  "license": "MIT",
+  "keywords": [
+    "forex",
+    "backtesting",
+    "trading",
+    "simulator",
+    "mt4",
+    "candlestick",
+    "replay"
+  ],
+  "engines": {
+    "node": "^20.19.0 || >=22.12.0"
+  },
   "scripts": {
     "dev": "vite",
     "build": "tsc --noEmit && vite build",
     "preview": "vite preview",
     "test": "vitest run",
-    "test:watch": "vitest"
+    "test:watch": "vitest",
+    "typecheck": "tsc --noEmit"
   },
   "dependencies": {
     "lightweight-charts": "^5.0.0",

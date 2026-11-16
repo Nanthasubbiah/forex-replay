@@ -1,0 +1,74 @@
+name: Bug report
+description: Something simulated wrong, rendered wrong, or crashed
+labels: ["bug"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for the report. For a *backtest result* that looks wrong, the
+        symbol, timeframe, bar timestamp and account settings are what make it
+        reproducible.
+
+  - type: textarea
+    id: what-happened
+    attributes:
+      label: What happened
+      description: Also tell us what you expected instead.
+      placeholder: |
+        Expected: SL at 1.08500 closes the position at that price.
+        Actual: it closed 12 pips away and the journal says "gap fill".
+    validations:
+      required: true
+
+  - type: textarea
+    id: steps
+    attributes:
+      label: Steps to reproduce
+      placeholder: |
+        1. Load XAUUSD_M5_2025.json.gz
+        2. Symbol XAUUSD, leverage 1:100
+        3. Buy 0.10, SL 2650.00
+        4. Step to 2025-03-14 13:30
+    validations:
+      required: true
+
+  - type: dropdown
+    id: area
+    attributes:
+      label: Area
+      multiple: true
+      options:
+        - Account / margin / stop-out
+        - Order fills, SL/TP, pending orders
+        - Swap / commission / slippage
+        - Data loading or parsing
+        - Chart, indicators or drawing tools
+        - Statistics or statement
+        - Build / tooling
+    validations:
+      required: true
+
+  - type: input
+    id: symbol
+    attributes:
+      label: Symbol & timeframe
+      placeholder: XAUUSD M5
+
+  - type: input
+    id: version
+    attributes:
+      label: Where you ran it
+      description: Commit hash, or "the GitHub Pages demo".
+      placeholder: 0c63f9d / local dev / Pages demo
+
+  - type: input
+    id: browser
+    attributes:
+      label: Browser & OS
+      placeholder: Firefox 133 on Windows 11
+
+  - type: textarea
+    id: extra
+    attributes:
+      label: Anything else
+      description: Console errors, screenshots, the data file's provenance.

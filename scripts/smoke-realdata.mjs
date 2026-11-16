@@ -11,7 +11,7 @@ const file = process.argv[3] ?? "fixtures/audusd_m5_2025.json.gz";
 const shot = "scripts/smoke-real.png";
 
 const browser = await chromium.launch({
-  executablePath: "/usr/bin/google-chrome",
+  executablePath: process.env.CHROME_PATH ?? "/usr/bin/google-chrome",
   headless: true,
   args: ["--no-sandbox", "--disable-gpu", "--disable-dev-shm-usage"],
 });

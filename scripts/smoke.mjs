@@ -1,5 +1,5 @@
 /**
- * Headless smoke test for the ForexReplay desk.
+ * Headless smoke test for the Forex Replay desk.
  * Uses system Chrome via playwright-core — no browser download required.
  *
  * Run: node scripts/smoke.mjs [baseURL] [screenshotPath]
@@ -10,7 +10,7 @@ const base = process.argv[2] ?? "http://127.0.0.1:5199";
 const shot = process.argv[3] ?? "scripts/smoke.png";
 
 const browser = await chromium.launch({
-  executablePath: "/usr/bin/google-chrome",
+  executablePath: process.env.CHROME_PATH ?? "/usr/bin/google-chrome",
   headless: true,
   args: ["--no-sandbox", "--disable-gpu", "--disable-dev-shm-usage"],
 });

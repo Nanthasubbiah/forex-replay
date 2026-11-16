@@ -1,11 +1,23 @@
-# ForexReplay — MT4-style backtesting desk (browser, open source)
+# Forex Replay — MT4-style backtesting desk (browser, open source)
+
+[![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
+[![PRs welcome](https://img.shields.io/badge/PRs-welcome-brightgreen.svg)](CONTRIBUTING.md)
 
 A free, self-hosted backtesting workspace that behaves like the MT4 **Strategy Tester in
 visual mode**: load historical data, press play, and trade against a real *account* —
 balance, equity, margin, free margin, stop-out, swap, commission, pending orders and a
 full trade statement. Everything runs in your browser; your data never leaves the machine.
 
+> **Live demo:** <https://your-github-username.github.io/forex-replay/> — no install needed.
+> *(Replace with your Pages URL once deployed; see [Deploying](#deploying), then delete this note.)*
+>
 > Not affiliated with MetaQuotes. It re-implements MT4 *account semantics*, not MQL4/`.ex4`.
+
+![The trading desk: candlestick chart, position lines, order panel and statement](docs/screenshots/desk.png)
+
+| Fibonacci & drawing tools | Indicators & oscillator pane |
+|---|---|
+| ![Fibonacci retracement and extension](docs/screenshots/fibonacci.png) | ![RSI, MACD, ATR panes](docs/screenshots/indicators.png) |
 
 ---
 
@@ -216,11 +228,13 @@ scripts/       headless Chrome smoke tests (playwright-core, system chrome — n
 ### Verify it
 ```bash
 npm test              # 104 engine/parser/indicator/symbol/shape/ruler tests (vitest)
+npm run typecheck     # tsc --noEmit
 npm run build         # tsc --noEmit + vite build
 
-# browser smoke tests (needs a dev server on 5199 and /usr/bin/google-chrome):
+# browser smoke tests (needs a dev server on 5199 and a local Chrome; set
+# CHROME_PATH if yours is not /usr/bin/google-chrome):
 npx vite --port 5199 --strictPort &
-node scripts/smoke.mjs              # demo data, play, trade, strategy backtest
+CHROME_PATH=/usr/bin/google-chrome node scripts/smoke.mjs   # demo data, play, trade, strategy backtest
 node scripts/smoke-realdata.mjs     # a real evtradelabs file through the UI parser
 node scripts/smoke-actions.mjs      # pending lines, right-click modify/close, Fibonacci tool
 node scripts/smoke-shapes-ma.mjs    # line tools, MA settings, click-to-edit
@@ -231,12 +245,47 @@ node scripts/smoke-symbol.mjs       # editable Symbol box: re-label, junk input,
 
 ---
 
+## Deploying
+
+The app is a static bundle with no backend and no data bundled into it, so it hosts anywhere.
+
+**GitHub Pages (what the demo uses).** Enable *Settings → Pages → Source: **GitHub Actions***,
+then push to the default branch — `.github/workflows/pages.yml` builds and publishes `dist/`.
+The build uses relative asset URLs, so it works under `https://<user>.github.io/<repo>/`
+without configuring a `base` path.
+
+**Anywhere else** — build and serve the folder:
+
+```bash
+npm run build
+# then serve dist/ (nginx, Netlify, S3, `npm run preview`, …)
+```
+
+Each visitor parses their own history file locally in the browser; nothing is uploaded to
+a server, so a static host costs nothing and needs no privacy policy.
+
+## Contributing
+
+Issues and PRs are welcome — see [CONTRIBUTING.md](CONTRIBUTING.md). The short version:
+
+```bash
+npm run typecheck && npm test && npm run build
+```
+
+CI runs that on Node 20 and 22 for every PR. The engine (`src/engine/`) and the chart math
+(`src/lib/`) are deliberately framework-free and unit-tested, and individual indicators,
+symbols and drawing tools are self-contained additions — you do not need to understand the
+whole app to land one. Never commit market-data files.
+
 ## Roadmap
 
 - Phase 2: multi-symbol portfolio replay, equity curve chart, slippage model presets,
   optimization sweeps over strategy params, prop-firm rules (daily loss / max DD),
   HTML/CSV statement export, trade list import/export, M1→tick builder.
 - Phase 3: strategy marketplace patterns (params UI), Python strategy bridge, plugin API.
+
+Planned work is tracked in the issue tracker; a feature request that describes the
+*backtesting task* you are trying to do is far more useful than one that names a widget.
 
 ## License
 

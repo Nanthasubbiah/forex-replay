@@ -39,7 +39,7 @@ export default function App() {
       <header className="topbar">
         <div className="brand">
           <span className="brand-logo">▚</span>
-          <span className="brand-name">ForexReplay</span>
+          <span className="brand-name">Forex Replay</span>
           <span className="brand-tag">MT4-style backtesting desk</span>
         </div>
         <div className="topbar-right">
