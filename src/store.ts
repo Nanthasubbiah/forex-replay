@@ -67,6 +67,8 @@ interface State {
   closeTicket: (ticket: number) => void;
   closeAll: () => void;
   cancelPending: (ticket: number) => void;
+  modifyPosition: (ticket: number, sl: number | null, tp: number | null) => boolean;
+  modifyPending: (ticket: number, patch: { price?: number | null; sl?: number | null; tp?: number | null }) => boolean;
   setToast: (toast: Toast | null) => void;
 }
 
@@ -293,6 +295,32 @@ export const useStore = create<State>((set, get) => ({
     if (!sim) return;
     sim.cancelPending(ticket);
     set({ version: get().version + 1 });
+  },
+
+  modifyPosition: (ticket, sl, tp) => {
+    const { sim } = get();
+    if (!sim) return false;
+    try {
+      const ok = sim.modifyPosition(ticket, sl, tp);
+      if (ok) set({ version: get().version + 1, toast: { kind: "success", message: `Position #${ticket} SL/TP updated.` } });
+      return ok;
+    } catch (e) {
+      set({ toast: { kind: "error", message: errText(e) } });
+      return false;
+    }
+  },
+
+  modifyPending: (ticket, patch) => {
+    const { sim } = get();
+    if (!sim) return false;
+    try {
+      const ok = sim.modifyPending(ticket, patch);
+      if (ok) set({ version: get().version + 1, toast: { kind: "success", message: `Pending order #${ticket} modified.` } });
+      return ok;
+    } catch (e) {
+      set({ toast: { kind: "error", message: errText(e) } });
+      return false;
+    }
   },
 
   setToast: (toast) => set({ toast }),

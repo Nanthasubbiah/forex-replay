@@ -253,6 +253,48 @@ export class Simulator {
     return true;
   }
 
+  /**
+   * Modify a pending order's trigger price and/or SL/TP.
+   * `null` removes SL/TP; `undefined` leaves the field untouched.
+   * Throws on invalid combinations (same rules as placing the order).
+   */
+  modifyPending(
+    ticket: number,
+    patch: { price?: number | null; sl?: number | null; tp?: number | null },
+  ): boolean {
+    const order = this.pendings.find((o) => o.ticket === ticket);
+    if (!order) return false;
+    const bar = this.lastBar;
+    if (!bar) return false;
+
+    const nextPrice = patch.price ?? order.price;
+    if (patch.price !== undefined) {
+      if (patch.price == null) this.fail("A pending order needs a trigger price");
+      const err = this.validatePending(order.type, nextPrice, bar);
+      if (err) this.fail(err);
+    }
+    const isBuySide = order.type === "buy_limit" || order.type === "buy_stop";
+    const nextSl = patch.sl !== undefined ? patch.sl : order.sl;
+    const nextTp = patch.tp !== undefined ? patch.tp : order.tp;
+    if (nextSl != null) {
+      const bad = isBuySide ? nextSl >= nextPrice : nextSl <= nextPrice;
+      if (bad) {
+        this.fail(`Invalid SL for ${order.type.replace("_", " ")}: must be ${isBuySide ? "below" : "above"} the trigger price`);
+      }
+    }
+    if (nextTp != null) {
+      const bad = isBuySide ? nextTp <= nextPrice : nextTp >= nextPrice;
+      if (bad) {
+        this.fail(`Invalid TP for ${order.type.replace("_", " ")}: must be ${isBuySide ? "above" : "below"} the trigger price`);
+      }
+    }
+    order.price = nextPrice;
+    order.sl = nextSl;
+    order.tp = nextTp;
+    this.pushEvent("info", bar.ts, `Pending #${order.ticket} modified (price ${nextPrice})`);
+    return true;
+  }
+
   closePosition(ticket: number, reason: CloseReason = "manual"): ClosedTrade | null {
     const idx = this.positions.findIndex((p) => p.ticket === ticket);
     if (idx === -1) return null;

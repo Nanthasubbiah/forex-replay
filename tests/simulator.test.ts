@@ -218,3 +218,69 @@ describe("strategy execution", () => {
     expect(sim.equityCurve).toHaveLength(3);
   });
 });
+
+describe("modify pending orders", () => {
+  it("updates trigger price, SL and TP", () => {
+    const sim = makeSim([flatBar(T0, 1.1)], { initialBalance: 10_000 });
+    sim.step(0);
+    const order = sim.placePending("buy_stop", 0.1, 1.105);
+    expect(order).not.toBeNull();
+    expect(sim.modifyPending(order!.ticket, { price: 1.11, sl: 1.108, tp: 1.115 })).toBe(true);
+    const updated = sim.pendings[0];
+    expect(updated.price).toBeCloseTo(1.11);
+    expect(updated.sl).toBeCloseTo(1.108);
+    expect(updated.tp).toBeCloseTo(1.115);
+    expect(sim.events.some((e) => e.message.includes("modified"))).toBe(true);
+  });
+
+  it("removes SL/TP when passed null", () => {
+    const sim = makeSim([flatBar(T0, 1.1)], { initialBalance: 10_000 });
+    sim.step(0);
+    const order = sim.placePending("buy_limit", 0.1, 1.095, { sl: 1.09, tp: 1.1 })!;
+    expect(sim.modifyPending(order.ticket, { sl: null, tp: null })).toBe(true);
+    expect(sim.pendings[0].sl).toBeNull();
+    expect(sim.pendings[0].tp).toBeNull();
+  });
+
+  it("rejects a trigger price on the wrong side of the market", () => {
+    const sim = makeSim([flatBar(T0, 1.1)], { initialBalance: 10_000 });
+    sim.step(0);
+    const order = sim.placePending("buy_stop", 0.1, 1.105)!;
+    expect(() => sim.modifyPending(order.ticket, { price: 1.09 })).toThrow(/above the current ask/);
+    expect(sim.pendings[0].price).toBeCloseTo(1.105);
+  });
+
+  it("rejects an SL on the wrong side of the trigger", () => {
+    const sim = makeSim([flatBar(T0, 1.1)], { initialBalance: 10_000 });
+    sim.step(0);
+    const order = sim.placePending("buy_stop", 0.1, 1.105)!;
+    expect(() => sim.modifyPending(order.ticket, { sl: 1.2 })).toThrow(/Invalid SL/);
+  });
+
+  it("returns false for unknown tickets", () => {
+    const sim = makeSim([flatBar(T0, 1.1)], { initialBalance: 10_000 });
+    sim.step(0);
+    expect(sim.modifyPending(999, { price: 1.1 })).toBe(false);
+  });
+});
+
+describe("modify positions", () => {
+  it("sets and updates SL/TP", () => {
+    const sim = makeSim([flatBar(T0, 1.1)], { initialBalance: 10_000 });
+    sim.step(0);
+    sim.marketOrder("buy", 0.5);
+    expect(sim.modifyPosition(1, 1.09, 1.11)).toBe(true);
+    expect(sim.positions[0].sl).toBeCloseTo(1.09);
+    expect(sim.positions[0].tp).toBeCloseTo(1.11);
+    expect(sim.modifyPosition(1, 1.095, null)).toBe(true);
+    expect(sim.positions[0].sl).toBeCloseTo(1.095);
+    expect(sim.positions[0].tp).toBeNull();
+  });
+
+  it("rejects invalid SL geometry", () => {
+    const sim = makeSim([flatBar(T0, 1.1)], { initialBalance: 10_000 });
+    sim.step(0);
+    sim.marketOrder("buy", 0.5);
+    expect(() => sim.modifyPosition(1, 1.2, null)).toThrow(/below/);
+  });
+});

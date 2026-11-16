@@ -1,4 +1,4 @@
-import { useEffect, useRef } from "react";
+import { useEffect, useRef, useState } from "react";
 import {
   CandlestickSeries,
   CrosshairMode,
@@ -17,10 +17,26 @@ import {
 import { useStore } from "../store";
 import type { LoadedData } from "../store";
 import type { Simulator } from "../engine/simulator";
+import type { PendingType } from "../engine/types";
 import { getSymbolSpec } from "../engine/symbols";
+import { fibLevels } from "../lib/fib";
 import { fmtPrice, fmtTime } from "../lib/format";
 
 type MarkersApi = ISeriesMarkersPluginApi<Time>;
+type FibMode = "first" | "second" | null;
+
+interface Fib {
+  id: number;
+  a: number;
+  b: number;
+}
+
+const PENDING_LABELS: Record<PendingType, string> = {
+  buy_limit: "BUY LIMIT",
+  sell_limit: "SELL LIMIT",
+  buy_stop: "BUY STOP",
+  sell_stop: "SELL STOP",
+};
 
 function buildMarkers(sim: Simulator): SeriesMarker<Time>[] {
   const out: SeriesMarker<Time>[] = [];
@@ -52,11 +68,30 @@ export function Chart() {
   const loadedRef = useRef<LoadedData | null>(null);
   const markCountRef = useRef(-1);
 
+  // Drawing tool state
+  const [fibs, setFibs] = useState<Fib[]>([]);
+  const [fibMode, setFibMode] = useState<FibMode>(null);
+  const [anchor, setAnchor] = useState<number | null>(null);
+  const fibSeq = useRef(1);
+  const fibLinesRef = useRef<IPriceLine[]>([]);
+  const fibLoadedRef = useRef<LoadedData | null>(null);
+  const fibModeRef = useRef<FibMode>(null);
+  const anchorRef = useRef<number | null>(null);
+
   const loaded = useStore((s) => s.loaded);
   const pos = useStore((s) => s.pos);
   const version = useStore((s) => s.version);
   const sim = useStore((s) => s.sim);
   const running = useStore((s) => s.running);
+
+  const changeFibMode = (mode: FibMode) => {
+    fibModeRef.current = mode;
+    setFibMode(mode);
+  };
+  const changeAnchor = (price: number | null) => {
+    anchorRef.current = price;
+    setAnchor(price);
+  };
 
   useEffect(() => {
     const el = containerRef.current;
@@ -98,6 +133,106 @@ export function Chart() {
     };
   }, []);
 
+  // ---- Fibonacci: two-click placement on the chart.
+  // Native DOM listeners are used instead of chart.subscribeClick because the library
+  // swallows a second click within its double-click window when it lands >5px away.
+  useEffect(() => {
+    const el = containerRef.current;
+    const candles = candleRef.current;
+    if (!el || !candles) return;
+    let downX = 0;
+    let downY = 0;
+    let downT = 0;
+    let pressed = false;
+    const onDown = (e: MouseEvent) => {
+      if (e.button !== 0) return;
+      pressed = true;
+      downX = e.clientX;
+      downY = e.clientY;
+      downT = performance.now();
+    };
+    const onUp = (e: MouseEvent) => {
+      if (!pressed || e.button !== 0) return;
+      pressed = false;
+      const moved = Math.hypot(e.clientX - downX, e.clientY - downY);
+      if (moved > 6 || performance.now() - downT > 600) return; // it was a drag, not a click
+      const mode = fibModeRef.current;
+      if (!mode) return;
+      const rect = el.getBoundingClientRect();
+      const price = candles.coordinateToPrice(e.clientY - rect.top);
+      if (price == null) return;
+      if (mode === "first") {
+        changeAnchor(price);
+        changeFibMode("second");
+        return;
+      }
+      const a = anchorRef.current;
+      if (a == null) return;
+      setFibs((fs) => [...fs, { id: fibSeq.current++, a, b: price }]);
+      changeAnchor(null);
+      changeFibMode(null);
+    };
+    el.addEventListener("mousedown", onDown);
+    el.addEventListener("mouseup", onUp);
+    return () => {
+      el.removeEventListener("mousedown", onDown);
+      el.removeEventListener("mouseup", onUp);
+    };
+  }, []);
+
+  // ---- Escape cancels an in-progress fib
+  useEffect(() => {
+    if (!fibMode) return;
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === "Escape") {
+        changeFibMode(null);
+        changeAnchor(null);
+      }
+    };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, [fibMode]);
+
+  // ---- render fib levels (independent of replay position lines)
+  useEffect(() => {
+    const candles = candleRef.current;
+    if (!candles) return;
+    for (const line of fibLinesRef.current) candles.removePriceLine(line);
+    fibLinesRef.current = [];
+
+    if (fibLoadedRef.current !== loaded) {
+      fibLoadedRef.current = loaded;
+      if (fibs.length > 0) setFibs([]);
+      if (fibMode) changeFibMode(null);
+      if (anchorRef.current != null) changeAnchor(null);
+      return;
+    }
+    if (!loaded) return;
+    const spec = getSymbolSpec(loaded.symbol);
+    const add = (price: number, color: string, title: string, width: 1 | 2 = 1) => {
+      fibLinesRef.current.push(
+        candles.createPriceLine({
+          price,
+          color,
+          lineWidth: width,
+          lineStyle: LineStyle.Dashed,
+          axisLabelVisible: true,
+          title,
+        }),
+      );
+    };
+    for (const fib of fibs) {
+      for (const lvl of fibLevels(fib.a, fib.b)) {
+        const color = lvl.golden ? "#f59e0b" : lvl.ratio === 0.5 ? "#a78bfa" : "#22d3ee";
+        add(lvl.price, color, `${lvl.label} ${lvl.price.toFixed(spec.digits)}`, lvl.golden ? 2 : 1);
+      }
+    }
+    if (fibMode === "second" && anchorRef.current != null) {
+      add(anchorRef.current, "#f59e0b", `0% ${anchorRef.current.toFixed(spec.digits)} — click 2nd point`, 2);
+    }
+  }, [fibs, fibMode, anchor, loaded]);
+
+  // ---- candles, volume, trade markers, order/position price lines
   useEffect(() => {
     const chart = chartRef.current;
     const candles = candleRef.current;
@@ -148,15 +283,30 @@ export function Chart() {
     for (const line of linesRef.current) candles.removePriceLine(line);
     linesRef.current = [];
     if (sim) {
+      // Pending orders: dashed line at the trigger price with ticket + type.
+      for (const o of sim.pendings) {
+        const isBuy = o.type === "buy_limit" || o.type === "buy_stop";
+        linesRef.current.push(
+          candles.createPriceLine({
+            price: o.price,
+            color: isBuy ? "rgba(34,197,94,0.95)" : "rgba(239,68,68,0.95)",
+            lineWidth: 1,
+            lineStyle: LineStyle.Dashed,
+            axisLabelVisible: true,
+            title: `${PENDING_LABELS[o.type]} #${o.ticket}`,
+          }),
+        );
+      }
+      // Open positions: entry + SL/TP lines (entry label becomes BUY/SELL on fill).
       for (const p of sim.positions) {
         linesRef.current.push(
           candles.createPriceLine({
             price: p.openPrice,
-            color: p.side === "buy" ? "#7f9bb8" : "#c29a5e",
+            color: p.side === "buy" ? "#34a07b" : "#c2724d",
             lineWidth: 1,
             lineStyle: LineStyle.Dotted,
-            axisLabelVisible: false,
-            title: `${p.side === "buy" ? "BUY" : "SELL"} ${p.lots.toFixed(2)}`,
+            axisLabelVisible: true,
+            title: `${p.side.toUpperCase()} #${p.ticket} ${p.lots.toFixed(2)}`,
           }),
         );
         if (p.sl != null) {
@@ -195,8 +345,24 @@ export function Chart() {
   const lastBar = loaded && pos > 0 ? loaded.bars[pos - 1] : null;
   const spec = loaded ? getSymbolSpec(loaded.symbol) : null;
   const spreadPips = lastBar && spec ? (lastBar.ask.c - lastBar.bid.c) / spec.pipSize : null;
-  const change =
-    lastBar && pos >= 2 && loaded ? lastBar.bid.c - loaded.bars[pos - 2].bid.c : null;
+  const change = lastBar && pos >= 2 && loaded ? lastBar.bid.c - loaded.bars[pos - 2].bid.c : null;
+
+  const startFib = () => {
+    if (!loaded) return;
+    if (fibMode) {
+      changeFibMode(null);
+      changeAnchor(null);
+      return;
+    }
+    changeAnchor(null);
+    changeFibMode("first");
+  };
+
+  const clearFibs = () => {
+    setFibs([]);
+    changeFibMode(null);
+    changeAnchor(null);
+  };
 
   return (
     <div className="chart-wrap">
@@ -213,6 +379,24 @@ export function Chart() {
           <span className="hud-time">{fmtTime(lastBar.ts)} UTC</span>
         </div>
       ) : null}
+
+      <div className="chart-tools">
+        <button
+          className={`tool-btn ${fibMode ? "active" : ""}`}
+          onClick={startFib}
+          disabled={!loaded || pos === 0}
+          title="Click two swing points to draw Fibonacci retracement levels (Esc cancels)"
+        >
+          {fibMode ? "✕ Fib" : "Fibonacci"}
+        </button>
+        <button className="tool-btn" onClick={clearFibs} disabled={fibs.length === 0} title="Remove all fib drawings">
+          Clear
+        </button>
+        {fibs.length > 0 ? <span className="tool-chip">{fibs.length} fib</span> : null}
+        {fibMode === "first" ? <span className="tool-hint">click swing point 1</span> : null}
+        {fibMode === "second" ? <span className="tool-hint">click swing point 2</span> : null}
+      </div>
+
       <div ref={containerRef} className="chart-canvas" />
       {!loaded ? (
         <div className="chart-empty">

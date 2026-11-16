@@ -359,6 +359,15 @@ button {
   z-index: 2;
   padding: 6px 10px;
   background: #0c131a;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.hint {
+  font-size: 10.5px;
+  color: var(--muted);
+  margin-left: auto;
 }
 
 table {
@@ -892,4 +901,145 @@ select:focus {
   background: #0f221a;
   border: 1px solid #1f5c46;
   color: #a8e6cf;
+}
+
+
+/* --------------------------------------------------------- drawing tools */
+
+.chart-tools {
+  position: absolute;
+  top: 8px;
+  right: 10px;
+  z-index: 6;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.tool-btn {
+  background: rgba(20, 33, 44, 0.92);
+  border: 1px solid var(--border);
+  color: var(--text);
+  border-radius: 7px;
+  padding: 5px 10px;
+  font-size: 11px;
+  cursor: pointer;
+}
+
+.tool-btn:hover {
+  border-color: #2c3c4d;
+}
+
+.tool-btn.active {
+  border-color: var(--teal);
+  color: var(--teal);
+  background: rgba(13, 31, 28, 0.92);
+}
+
+.tool-btn:disabled {
+  opacity: 0.35;
+  cursor: not-allowed;
+}
+
+.tool-chip {
+  font-size: 10px;
+  color: var(--teal);
+  font-family: var(--mono);
+}
+
+.tool-hint {
+  font-size: 10.5px;
+  color: var(--amber);
+  font-family: var(--mono);
+}
+
+/* --------------------------------------------------------- context menu */
+
+.ctx-menu {
+  position: fixed;
+  z-index: 80;
+  min-width: 172px;
+  background: #111a22;
+  border: 1px solid #2a3a49;
+  border-radius: 8px;
+  padding: 4px;
+  box-shadow: 0 12px 32px rgba(0, 0, 0, 0.5);
+  display: flex;
+  flex-direction: column;
+}
+
+.ctx-item {
+  text-align: left;
+  background: none;
+  border: none;
+  color: var(--text);
+  font-size: 12px;
+  padding: 8px 10px;
+  border-radius: 6px;
+  cursor: pointer;
+}
+
+.ctx-item:hover {
+  background: #18242f;
+}
+
+.ctx-item.danger {
+  color: #f08a8a;
+}
+
+.ctx-item.danger:hover {
+  background: #2a1414;
+}
+
+/* ---------------------------------------------------------------- modal */
+
+.modal-backdrop {
+  position: fixed;
+  inset: 0;
+  background: rgba(3, 7, 10, 0.6);
+  z-index: 90;
+  display: grid;
+  place-items: center;
+}
+
+.modal {
+  width: 340px;
+  background: #111a22;
+  border: 1px solid #2a3a49;
+  border-radius: 12px;
+  padding: 16px;
+  box-shadow: 0 20px 48px rgba(0, 0, 0, 0.55);
+}
+
+.modal h3 {
+  margin: 0 0 12px;
+  font-size: 13px;
+  font-weight: 600;
+}
+
+.modal-fields {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.modal-fields label {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  font-size: 11px;
+  color: var(--muted);
+}
+
+.modal-note {
+  margin: 0;
+  font-size: 10.5px;
+  color: var(--muted);
+}
+
+.modal-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 8px;
+  margin-top: 14px;
 }

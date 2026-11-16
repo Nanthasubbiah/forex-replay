@@ -5,3 +5,4 @@ dist/
 *.tsbuildinfo
 fixtures/*.gz
 scripts/*.png
+*.json.gz

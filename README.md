@@ -40,6 +40,16 @@ prices. M5+ is free; M1 and the current year need a free account on their site.
 | Trade history → statement-style report | ✅ |
 | Slippage (configurable, pips) | ✅ |
 
+### Trading desk
+- Pending orders are drawn on the chart as dashed lines labelled `BUY STOP #12` etc.;
+  when triggered they are replaced by the `BUY #12 0.10` position line (same for sells).
+- Right-click any row in *Positions* to **modify SL/TP** or **close**, and in *Open orders*
+  to **modify** (trigger price / SL / TP) or **cancel**. All validation is done by the engine
+  and errors appear as toasts.
+- **Fibonacci retracement tool**: press `Fibonacci`, click the swing start and end on the
+  chart — draws 0 / 23.6 / 38.2 / 50 / 61.8 / 78.6 / 100% levels with prices on the axis
+  (61.8% highlighted). `Esc` cancels an in-progress drawing, `Clear` removes all.
+
 ### Replay & analysis
 - Bar-by-bar replay with play/pause/step, 1×–400× speed, progress + UTC timestamp.
 - Candlestick chart (lightweight-charts), volume, trade markers, live SL/TP/entry lines.
@@ -138,6 +148,7 @@ npm run build         # tsc --noEmit + vite build
 npx vite --port 5199 --strictPort &
 node scripts/smoke.mjs           # demo data, play, trade, strategy backtest
 node scripts/smoke-realdata.mjs  # a real evtradelabs file through the UI parser
+node scripts/smoke-actions.mjs   # pending lines, right-click modify/close, Fibonacci tool
 ```
 
 ---

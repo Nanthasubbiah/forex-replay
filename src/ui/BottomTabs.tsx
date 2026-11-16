@@ -1,6 +1,8 @@
 import { useState } from "react";
 import { useStore } from "../store";
 import type { Position } from "../engine/types";
+import { ContextMenu } from "./ContextMenu";
+import { ModifyDialog } from "./ModifyDialog";
 import { computeStats } from "../engine/stats";
 import { floatingUsd, markPrice } from "../engine/account";
 import { getSymbolSpec } from "../engine/symbols";
@@ -17,6 +19,8 @@ export function BottomTabs() {
   const cancelPending = useStore((s) => s.cancelPending);
 
   const [tab, setTab] = useState<TabKey>("positions");
+  const [menu, setMenu] = useState<{ x: number; y: number; kind: "position" | "pending"; ticket: number } | null>(null);
+  const [modify, setModify] = useState<{ kind: "position" | "pending"; ticket: number } | null>(null);
   void version;
 
   const spec = loaded ? getSymbolSpec(loaded.symbol) : null;
@@ -59,6 +63,7 @@ export function BottomTabs() {
                 <button className="secondary-btn small" onClick={closeAll}>
                   Close all
                 </button>
+                <span className="hint">right-click a row to modify SL/TP or close</span>
               </div>
               <table>
                 <thead>
@@ -80,7 +85,13 @@ export function BottomTabs() {
                   {positions.map((p) => {
                     const pl = floatOf(p);
                     return (
-                      <tr key={p.ticket}>
+                      <tr
+                        key={p.ticket}
+                        onContextMenu={(e) => {
+                          e.preventDefault();
+                          setMenu({ x: e.clientX, y: e.clientY, kind: "position", ticket: p.ticket });
+                        }}
+                      >
                         <Td>{p.ticket}</Td>
                         <Td>{p.symbol}</Td>
                         <Td>
@@ -114,6 +125,9 @@ export function BottomTabs() {
             <Empty text="No pending orders. Place buy/sell limits or stops from the order panel." />
           ) : (
             <div className="table-scroll">
+              <div className="table-actions">
+                <span className="hint">right-click a row to modify or cancel</span>
+              </div>
               <table>
                 <thead>
                   <tr>
@@ -130,7 +144,13 @@ export function BottomTabs() {
                 </thead>
                 <tbody>
                   {pendings.map((o) => (
-                    <tr key={o.ticket}>
+                    <tr
+                      key={o.ticket}
+                      onContextMenu={(e) => {
+                        e.preventDefault();
+                        setMenu({ x: e.clientX, y: e.clientY, kind: "pending", ticket: o.ticket });
+                      }}
+                    >
                       <Td>{o.ticket}</Td>
                       <Td>{o.type.replace("_", " ")}</Td>
                       <Td right>{fmtLots(o.lots)}</Td>
@@ -266,6 +286,34 @@ export function BottomTabs() {
           )
         ) : null}
       </div>
+
+      {menu ? (
+        <ContextMenu
+          x={menu.x}
+          y={menu.y}
+          items={
+            menu.kind === "position"
+              ? [
+                  { label: "Modify SL / TP…", onClick: () => setModify({ kind: "position", ticket: menu.ticket }) },
+                  { label: "Close position", danger: true, onClick: () => closeTicket(menu.ticket) },
+                ]
+              : [
+                  { label: "Modify order…", onClick: () => setModify({ kind: "pending", ticket: menu.ticket }) },
+                  { label: "Cancel order", danger: true, onClick: () => cancelPending(menu.ticket) },
+                ]
+          }
+          onClose={() => setMenu(null)}
+        />
+      ) : null}
+
+      {modify ? (
+        <ModifyDialog
+          key={`${modify.kind}-${modify.ticket}`}
+          kind={modify.kind}
+          ticket={modify.ticket}
+          onClose={() => setModify(null)}
+        />
+      ) : null}
     </section>
   );
 }
